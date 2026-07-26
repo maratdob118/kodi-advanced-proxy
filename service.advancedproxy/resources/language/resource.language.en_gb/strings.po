@@ -1,4 +1,4 @@
-# Kodi language file for Advanced Proxy (sing-box)
+# Kodi language file for Advanced Proxy
 msgid ""
 msgstr ""
 "Project-Id-Version: service.advancedproxy\n"
@@ -14,141 +14,205 @@ msgstr ""
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
 msgctxt "#32100"
-msgid "Proxy"
+msgid "Engine"
 msgstr ""
 
 msgctxt "#32101"
-msgid "Subscription"
+msgid "Proxy engine"
 msgstr ""
 
 msgctxt "#32102"
-msgid "Subscription URL"
+msgid "Engine"
 msgstr ""
 
 msgctxt "#32103"
-msgid "Subscription link returning proxy profile URLs (vless/hy2/trojan lines)"
+msgid "Proxy core to run locally (sing-box supports Hysteria2; xray does not)"
 msgstr ""
 
 msgctxt "#32104"
-msgid "Skip protocols"
+msgid "sing-box"
 msgstr ""
 
 msgctxt "#32105"
-msgid "Comma-separated protocols/transports to exclude (e.g. trojan,xhttp)"
+msgid "Xray"
 msgstr ""
 
 msgctxt "#32106"
-msgid "Local listeners"
+msgid "Autostart"
 msgstr ""
 
 msgctxt "#32107"
-msgid "Local proxy port"
+msgid "Start the proxy automatically when Kodi starts"
 msgstr ""
 
 msgctxt "#32108"
-msgid "Local mixed SOCKS5/HTTP proxy port (127.0.0.1) that Kodi proxy settings point to"
+msgid "Notifications"
 msgstr ""
 
 msgctxt "#32109"
-msgid ""
+msgid "Show a notification when the active profile switches or the connection is lost"
 msgstr ""
 
 msgctxt "#32110"
-msgid ""
+msgid "Proxy"
 msgstr ""
 
 msgctxt "#32111"
-msgid "Enable LAN mixed inbound"
+msgid "Local proxy"
 msgstr ""
 
 msgctxt "#32112"
-msgid "Also listen on 0.0.0.0 for other devices on the LAN (HTTP+SOCKS)"
+msgid "Local port"
 msgstr ""
 
 msgctxt "#32113"
-msgid "LAN mixed port"
+msgid "Local proxy listen port (127.0.0.1) that Kodi proxy settings point to"
 msgstr ""
 
 msgctxt "#32114"
-msgid "Port for the LAN mixed inbound"
+msgid "Switching mode"
 msgstr ""
 
 msgctxt "#32115"
-msgid "URL test"
+msgid "urltest: auto-switch by latency; manual: use the selected profile"
 msgstr ""
 
 msgctxt "#32116"
-msgid "Auto-switching"
+msgid "urltest (auto)"
 msgstr ""
 
 msgctxt "#32117"
-msgid "Test interval"
+msgid "manual"
 msgstr ""
 
 msgctxt "#32118"
-msgid "How often to probe outbounds (e.g. 3m)"
+msgid "Test interval"
 msgstr ""
 
 msgctxt "#32119"
-msgid "Tolerance (ms)"
+msgid "How often to probe profiles (e.g. 3m)"
 msgstr ""
 
 msgctxt "#32120"
-msgid "Switch only when another node is faster than current by this many ms"
+msgid "Tolerance (ms)"
 msgstr ""
 
 msgctxt "#32121"
-msgid "Interrupt existing connections"
+msgid "Switch only when another profile is faster than the current by this many ms"
 msgstr ""
 
 msgctxt "#32122"
-msgid "Drop active connections when the selected outbound changes"
-msgstr ""
-
-msgctxt "#32123"
 msgid "Test URL"
 msgstr ""
 
+msgctxt "#32123"
+msgid "URL used to measure profile latency"
+msgstr ""
+
 msgctxt "#32124"
-msgid "URL used to measure outbound latency"
+msgid "Interrupt existing connections"
 msgstr ""
 
 msgctxt "#32125"
-msgid "Advanced"
-msgstr ""
-
-msgctxt "#32126"
-msgid "Logging & platform"
-msgstr ""
-
-msgctxt "#32127"
-msgid "Log level"
-msgstr ""
-
-msgctxt "#32128"
-msgid "sing-box log verbosity"
-msgstr ""
-
-msgctxt "#32129"
-msgid "debug"
+msgid "Drop active connections when the active profile changes"
 msgstr ""
 
 msgctxt "#32130"
-msgid "info"
+msgid "Profiles"
 msgstr ""
 
 msgctxt "#32131"
-msgid "warn"
+msgid "Proxy profiles"
 msgstr ""
 
 msgctxt "#32132"
-msgid "error"
+msgid "Profiles"
 msgstr ""
 
 msgctxt "#32133"
-msgid "Platform override"
+msgid "Add profile link..."
 msgstr ""
 
 msgctxt "#32134"
+msgid "Paste a vless:// hy2:// or trojan:// link"
+msgstr ""
+
+msgctxt "#32135"
+msgid "Manage profiles..."
+msgstr ""
+
+msgctxt "#32136"
+msgid "Enable, disable or delete profiles"
+msgstr ""
+
+msgctxt "#32137"
+msgid "Select active profile..."
+msgstr ""
+
+msgctxt "#32138"
+msgid "Choose the profile used in manual mode"
+msgstr ""
+
+msgctxt "#32139"
+msgid "Test profiles latency"
+msgstr ""
+
+msgctxt "#32140"
+msgid "Measure latency of all enabled profiles"
+msgstr ""
+
+msgctxt "#32141"
+msgid "Clear all profiles"
+msgstr ""
+
+msgctxt "#32142"
+msgid "Remove every stored profile"
+msgstr ""
+
+msgctxt "#32150"
+msgid "Advanced"
+msgstr ""
+
+msgctxt "#32151"
+msgid "Advanced"
+msgstr ""
+
+msgctxt "#32152"
+msgid "Skip protocols"
+msgstr ""
+
+msgctxt "#32153"
+msgid "Comma-separated protocols/transports to exclude (e.g. trojan,xhttp)"
+msgstr ""
+
+msgctxt "#32154"
+msgid "Log level"
+msgstr ""
+
+msgctxt "#32155"
+msgid "Engine log verbosity"
+msgstr ""
+
+msgctxt "#32156"
+msgid "debug"
+msgstr ""
+
+msgctxt "#32157"
+msgid "info"
+msgstr ""
+
+msgctxt "#32158"
+msgid "warn"
+msgstr ""
+
+msgctxt "#32159"
+msgid "error"
+msgstr ""
+
+msgctxt "#32160"
+msgid "Platform override"
+msgstr ""
+
+msgctxt "#32161"
 msgid "Force binary platform (e.g. linux_armv7) or 'auto'"
 msgstr ""
