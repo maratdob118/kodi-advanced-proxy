@@ -114,8 +114,13 @@ class ProxySupervisor(object):
         self._was_running = False
 
     def restart(self):
-        self.bin.restart(self.config_path)
+        """Rebuild config from current profiles/settings, then restart the engine."""
+        ok = self.build_and_write_config()
         self.last_reload = time.time()
+        if not ok:
+            self.log("restart: config build failed, keeping current process", "warn")
+            return
+        self.bin.restart(self.config_path)
         self._last_active_tag = self.store.active_tag
 
     # ----- tick ------------------------------------------------------
@@ -132,10 +137,7 @@ class ProxySupervisor(object):
             self._watch_active_change()
             if now - self.last_reload >= self.reload_interval:
                 self.log("refreshing config")
-                if self.build_and_write_config():
-                    self.restart()
-                else:
-                    self.last_reload = now
+                self.restart()
             return
 
         if self.bin.proc is not None:
