@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+_work/
+dist/
+_template_shadowsocks/
+_vendor/
+*.log

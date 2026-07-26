@@ -1,0 +1,113 @@
+<settings version="2">
+    <category id="proxy" label="32100">
+        <group id="1" label="32101">
+            <setting id="subscription_url" type="string" label="32102" help="32103">
+                <level>0</level>
+                <default></default>
+                <constraints>
+                    <allowempty>true</allowempty>
+                </constraints>
+                <control type="edit" format="string">
+                    <heading>32102</heading>
+                </control>
+            </setting>
+            <setting id="skip_protocols" type="string" label="32104" help="32105">
+                <level>0</level>
+                <default>trojan,xhttp</default>
+                <control type="edit" format="string">
+                    <heading>32104</heading>
+                </control>
+            </setting>
+        </group>
+        <group id="2" label="32106">
+            <setting id="local_port" type="integer" label="32107" help="32108">
+                <level>0</level>
+                <default>1080</default>
+                <constraints>
+                    <minimum>1</minimum>
+                    <maximum>65535</maximum>
+                </constraints>
+                <control type="edit" format="integer">
+                    <heading>32107</heading>
+                </control>
+            </setting>
+            <setting id="lan_mixed_enabled" type="boolean" label="32111" help="32112">
+                <level>0</level>
+                <default>false</default>
+                <control type="toggle"/>
+            </setting>
+            <setting id="lan_mixed_port" type="integer" label="32113" help="32114" parent="lan_mixed_enabled">
+                <level>0</level>
+                <default>1080</default>
+                <constraints>
+                    <minimum>1</minimum>
+                    <maximum>65535</maximum>
+                </constraints>
+                <control type="edit" format="integer">
+                    <heading>32113</heading>
+                </control>
+                <dependencies>
+                    <dependency type="visible" setting="lan_mixed_enabled">true</dependency>
+                </dependencies>
+            </setting>
+        </group>
+    </category>
+    <category id="urltest" label="32115">
+        <group id="1" label="32116">
+            <setting id="urltest_interval" type="string" label="32117" help="32118">
+                <level>0</level>
+                <default>3m</default>
+                <control type="edit" format="string">
+                    <heading>32117</heading>
+                </control>
+            </setting>
+            <setting id="urltest_tolerance" type="integer" label="32119" help="32120">
+                <level>0</level>
+                <default>50</default>
+                <constraints>
+                    <minimum>0</minimum>
+                    <maximum>10000</maximum>
+                </constraints>
+                <control type="edit" format="integer">
+                    <heading>32119</heading>
+                </control>
+            </setting>
+            <setting id="interrupt_connections" type="boolean" label="32121" help="32122">
+                <level>0</level>
+                <default>true</default>
+                <control type="toggle"/>
+            </setting>
+            <setting id="test_url" type="string" label="32123" help="32124">
+                <level>0</level>
+                <default>https://www.gstatic.com/generate_204</default>
+                <control type="edit" format="string">
+                    <heading>32123</heading>
+                </control>
+            </setting>
+        </group>
+    </category>
+    <category id="advanced" label="32125">
+        <group id="1" label="32126">
+            <setting id="log_level" type="integer" label="32127" help="32128">
+                <level>0</level>
+                <default>1</default>
+                <constraints>
+                    <options>
+                        <option label="32129">0</option>
+                        <option label="32130">1</option>
+                        <option label="32131">2</option>
+                        <option label="32132">3</option>
+                    </options>
+                </constraints>
+                <control type="list" format="string"/>
+            </setting>
+            <setting id="binary_platform_override" type="string" label="32133" help="32134">
+                <level>1</level>
+                <default>auto</default>
+                <control type="edit" format="string">
+                    <heading>32133</heading>
+                </control>
+            </setting>
+        </group>
+    </category>
+</settings>
