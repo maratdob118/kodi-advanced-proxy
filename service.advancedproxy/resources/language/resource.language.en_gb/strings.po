@@ -216,3 +216,11 @@ msgstr ""
 msgctxt "#32161"
 msgid "Force binary platform (e.g. linux_armv7) or 'auto'"
 msgstr ""
+
+msgctxt "#32162"
+msgid "Custom binary path"
+msgstr ""
+
+msgctxt "#32163"
+msgid "Optional: path to your own sing-box/xray binary. Leave empty to use the bundled one."
+msgstr ""
