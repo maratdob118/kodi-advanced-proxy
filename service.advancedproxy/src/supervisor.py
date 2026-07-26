@@ -50,6 +50,7 @@ class ProxySupervisor(object):
             engine=self.settings.get("engine", "sing-box"),
             platform_override=self.settings.get("binary_platform_override", "auto"),
             logger=self.log,
+            custom_path=self.settings.get("binary_custom_path", ""),
         )
 
     # ----- config ----------------------------------------------------

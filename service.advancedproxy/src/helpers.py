@@ -21,6 +21,7 @@ _DEFAULTS = {
     "skip_protocols": "trojan,xhttp",
     "log_level": "1",
     "binary_platform_override": "auto",
+    "binary_custom_path": "",
 }
 
 _LOG_LEVELS = {"0": "debug", "1": "info", "2": "warn", "3": "error"}
@@ -66,6 +67,7 @@ def get_settings(reader=None):
         "skip_protocols": s("skip_protocols"),
         "log_level": _LOG_LEVELS.get(str(s("log_level")), "info"),
         "binary_platform_override": s("binary_platform_override"),
+        "binary_custom_path": s("binary_custom_path"),
     }
 
 

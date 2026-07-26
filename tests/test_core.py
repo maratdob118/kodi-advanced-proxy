@@ -14,6 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "..", "service.advancedproxy", "src")
 sys.path.insert(0, os.path.abspath(SRC))
 
+import binary_manager  # noqa: E402
 import build_singbox  # noqa: E402
 import build_xray  # noqa: E402
 import helpers  # noqa: E402
@@ -190,6 +191,31 @@ class TestHelpers(unittest.TestCase):
         self.assertIs(s["notify"], False)
         self.assertEqual(s["local_port"], 8080)
         self.assertEqual(s["log_level"], "warn")
+
+
+class TestBinaryManager(unittest.TestCase):
+    def test_paths(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(addon, work, platform_override="linux_x64")
+            self.assertTrue(bm.bundled_binary.endswith(
+                os.path.join("resources", "bin", "linux_x64", "sing-box")))
+            self.assertTrue(bm.work_binary.endswith(
+                os.path.join("bin", "sing-box", "linux_x64", "sing-box")))
+            self.assertEqual(bm.platform, "linux_x64")
+
+    def test_custom_path_valid(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            fake = os.path.join(addon, "sing-box")
+            with open(fake, "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(fake, 0o755)
+            bm = binary_manager.BinaryManager(addon, work, custom_path=fake)
+            self.assertEqual(bm.ensure_binary(), fake)
+
+    def test_custom_path_invalid_falls_back(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(addon, work, custom_path="/nonexistent/x")
+            self.assertIsNone(bm._resolve_custom())
 
 
 class TestOsarch(unittest.TestCase):

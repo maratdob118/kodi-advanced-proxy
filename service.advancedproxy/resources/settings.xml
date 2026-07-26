@@ -150,6 +150,16 @@
                     <heading>32152</heading>
                 </control>
             </setting>
+            <setting id="binary_custom_path" type="string" label="32162" help="32163">
+                <level>0</level>
+                <default></default>
+                <constraints>
+                    <allowempty>true</allowempty>
+                </constraints>
+                <control type="button" format="file">
+                    <heading>32162</heading>
+                </control>
+            </setting>
             <setting id="log_level" type="integer" label="32154" help="32155">
                 <level>0</level>
                 <default>1</default>

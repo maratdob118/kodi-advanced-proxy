@@ -38,12 +38,13 @@ def _noop_log(msg, level="info"):
 
 class BinaryManager(object):
     def __init__(self, addon_dir, work_dir, engine="sing-box",
-                 platform_override="auto", logger=None):
+                 platform_override="auto", logger=None, custom_path=""):
         self.addon_dir = addon_dir
         self.work_dir = work_dir
         self.engine = engine
         self.log = logger or _noop_log
         self.platform = osarch.get_platform(platform_override)
+        self.custom_path = custom_path or ""
         self.proc = None
 
     # ----- names -----------------------------------------------------
@@ -74,6 +75,17 @@ class BinaryManager(object):
 
     # ----- prepare ---------------------------------------------------
     def ensure_binary(self):
+        """Return path to a ready-to-run engine binary.
+
+        Priority: custom_path (user-supplied) > bundled > download.
+        """
+        if self.custom_path:
+            custom = self._resolve_custom()
+            if custom:
+                return custom
+            self.log("custom binary path invalid (%s); falling back to bundle/download"
+                     % self.custom_path, "warn")
+
         os.makedirs(self.work_dir_bin, exist_ok=True)
         if self._sync_from_bundle():
             return self.work_binary
@@ -83,6 +95,24 @@ class BinaryManager(object):
             raise RuntimeError("%s binary unavailable for platform %s" % (self.engine, self.platform))
         self._make_exec(self.work_binary)
         return self.work_binary
+
+    def _resolve_custom(self):
+        """Validate and return the user-supplied custom binary path, else None."""
+        path = os.path.expanduser(self.custom_path.strip())
+        if not path or not os.path.isfile(path):
+            return None
+        self._make_exec(path)
+        if not self._binary_runs(path):
+            return None
+        self.log("Using custom %s binary: %s" % (self.engine, path))
+        return path
+
+    def _binary_runs(self, path):
+        try:
+            out = subprocess.run([path, "version"], capture_output=True, timeout=10)
+            return out.returncode == 0
+        except Exception:
+            return False
 
     def _sync_from_bundle(self):
         src = self.bundled_binary
