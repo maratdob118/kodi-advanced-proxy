@@ -9,8 +9,9 @@ local SOCKS5 (10808) or HTTP (10809) port.
 import os
 import sys
 
-# Make src/ importable when run as a Kodi service
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.join(_HERE, "src"))
 
 import xbmc  # noqa: E402
 
@@ -50,11 +51,13 @@ def main():
             _xbmc_log("failed to start: %s" % sup.last_error, "error")
 
     monitor = xbmc.Monitor()
+    prev_settings = settings
     while not monitor.abortRequested():
         # re-read settings so user edits take effect
         try:
             new_settings = helpers.get_settings()
-            if new_settings != sup.settings:
+            if new_settings != prev_settings:
+                prev_settings = new_settings
                 _xbmc_log("settings changed, applying")
                 sup.settings.update(new_settings)
                 sup.settings.setdefault("log_path", helpers.log_path())

@@ -14,7 +14,11 @@ from urllib.parse import unquote, parse_qs
 
 
 def fetch_subscription(sub_url, timeout=20):
-    with urllib.request.urlopen(sub_url, timeout=timeout) as resp:
+    # The addon provides the proxy itself, so its own subscription fetch must
+    # never be routed through a (possibly not-yet-running or dead) proxy that
+    # Kodi injects into the embedded interpreter's environment.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(sub_url, timeout=timeout) as resp:
         data = resp.read().decode("utf-8", "replace")
     return [l.strip() for l in data.strip().split("\n") if l.strip()]
 
