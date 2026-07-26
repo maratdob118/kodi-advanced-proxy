@@ -1,0 +1,154 @@
+# Kodi language file for Advanced Proxy (sing-box)
+msgid ""
+msgstr ""
+"Project-Id-Version: service.advancedproxy\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-26 00:00+0000\n"
+"PO-Revision-Date: 2026-07-26 00:00+0000\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgctxt "#32100"
+msgid "Proxy"
+msgstr ""
+
+msgctxt "#32101"
+msgid "Subscription"
+msgstr ""
+
+msgctxt "#32102"
+msgid "Subscription URL"
+msgstr ""
+
+msgctxt "#32103"
+msgid "Subscription link returning proxy profile URLs (vless/hy2/trojan lines)"
+msgstr ""
+
+msgctxt "#32104"
+msgid "Skip protocols"
+msgstr ""
+
+msgctxt "#32105"
+msgid "Comma-separated protocols/transports to exclude (e.g. trojan,xhttp)"
+msgstr ""
+
+msgctxt "#32106"
+msgid "Local listeners"
+msgstr ""
+
+msgctxt "#32107"
+msgid "Local proxy port"
+msgstr ""
+
+msgctxt "#32108"
+msgid "Local mixed SOCKS5/HTTP proxy port (127.0.0.1) that Kodi proxy settings point to"
+msgstr ""
+
+msgctxt "#32109"
+msgid ""
+msgstr ""
+
+msgctxt "#32110"
+msgid ""
+msgstr ""
+
+msgctxt "#32111"
+msgid "Enable LAN mixed inbound"
+msgstr ""
+
+msgctxt "#32112"
+msgid "Also listen on 0.0.0.0 for other devices on the LAN (HTTP+SOCKS)"
+msgstr ""
+
+msgctxt "#32113"
+msgid "LAN mixed port"
+msgstr ""
+
+msgctxt "#32114"
+msgid "Port for the LAN mixed inbound"
+msgstr ""
+
+msgctxt "#32115"
+msgid "URL test"
+msgstr ""
+
+msgctxt "#32116"
+msgid "Auto-switching"
+msgstr ""
+
+msgctxt "#32117"
+msgid "Test interval"
+msgstr ""
+
+msgctxt "#32118"
+msgid "How often to probe outbounds (e.g. 3m)"
+msgstr ""
+
+msgctxt "#32119"
+msgid "Tolerance (ms)"
+msgstr ""
+
+msgctxt "#32120"
+msgid "Switch only when another node is faster than current by this many ms"
+msgstr ""
+
+msgctxt "#32121"
+msgid "Interrupt existing connections"
+msgstr ""
+
+msgctxt "#32122"
+msgid "Drop active connections when the selected outbound changes"
+msgstr ""
+
+msgctxt "#32123"
+msgid "Test URL"
+msgstr ""
+
+msgctxt "#32124"
+msgid "URL used to measure outbound latency"
+msgstr ""
+
+msgctxt "#32125"
+msgid "Advanced"
+msgstr ""
+
+msgctxt "#32126"
+msgid "Logging & platform"
+msgstr ""
+
+msgctxt "#32127"
+msgid "Log level"
+msgstr ""
+
+msgctxt "#32128"
+msgid "sing-box log verbosity"
+msgstr ""
+
+msgctxt "#32129"
+msgid "debug"
+msgstr ""
+
+msgctxt "#32130"
+msgid "info"
+msgstr ""
+
+msgctxt "#32131"
+msgid "warn"
+msgstr ""
+
+msgctxt "#32132"
+msgid "error"
+msgstr ""
+
+msgctxt "#32133"
+msgid "Platform override"
+msgstr ""
+
+msgctxt "#32134"
+msgid "Force binary platform (e.g. linux_armv7) or 'auto'"
+msgstr ""
