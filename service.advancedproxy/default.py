@@ -149,9 +149,8 @@ def _sync_info(store):
 
 
 def main():
-    query = sys.argv[2] if len(sys.argv) > 2 else ""
-    params = urllib.parse.parse_qs(query.lstrip("?"))
-    action = params.get("action", [""])[0]
+    # RunScript(service.advancedproxy,<action>) passes the action as sys.argv[1].
+    action = sys.argv[1] if len(sys.argv) > 1 else ""
     _log("UI action: %s argv=%s" % (action, sys.argv))
 
     if action == "add":
@@ -165,21 +164,7 @@ def main():
     elif action == "clear":
         action_clear()
     else:
-        # Opened as a plugin directory (addon browser) with no action:
-        # close the directory cleanly to avoid a GetDirectory error,
-        # then offer the profile manager.
-        _close_directory()
         action_manage()
-
-
-def _close_directory():
-    try:
-        import xbmcplugin
-        handle = int(sys.argv[1])
-        if handle >= 0:
-            xbmcplugin.endOfDirectory(handle, succeeded=True)
-    except (ValueError, IndexError):
-        pass
 
 
 if __name__ == "__main__":
