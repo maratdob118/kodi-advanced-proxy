@@ -165,8 +165,21 @@ def main():
     elif action == "clear":
         action_clear()
     else:
-        # default: open manager
+        # Opened as a plugin directory (addon browser) with no action:
+        # close the directory cleanly to avoid a GetDirectory error,
+        # then offer the profile manager.
+        _close_directory()
         action_manage()
+
+
+def _close_directory():
+    try:
+        import xbmcplugin
+        handle = int(sys.argv[1])
+        if handle >= 0:
+            xbmcplugin.endOfDirectory(handle, succeeded=True)
+    except (ValueError, IndexError):
+        pass
 
 
 if __name__ == "__main__":
