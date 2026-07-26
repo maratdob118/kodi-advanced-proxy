@@ -4,6 +4,9 @@
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
     <extension point="xbmc.service" library="main.py" start="startup"/>
+    <extension point="xbmc.python.pluginsource" library="default.py">
+        <provides>executable</provides>
+    </extension>
     <extension point="xbmc.python.module" library="src"/>
     <extension point="xbmc.addon.metadata">
         <summary lang="en_GB">Local sing-box proxy with subscription urltest auto-switching</summary>
