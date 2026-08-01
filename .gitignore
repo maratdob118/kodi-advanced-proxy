@@ -6,3 +6,5 @@ dist/
 _template_shadowsocks/
 _vendor/
 *.log
+
+.worktrees/
