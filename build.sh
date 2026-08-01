@@ -16,7 +16,7 @@ cd "$(dirname "$0")"
 ADDON="service.advancedproxy"
 SINGBOX_VERSION="1.13.14"
 XRAY_VERSION="25.8.3"
-ADDON_VERSION="0.2.0"
+ADDON_VERSION="0.2.2"
 DIST="dist"
 
 PLATFORMS=(linux_x64 linux_armv7 linux_arm64 linux_x86 android_arm64 windows_x64 darwin_arm64 darwin_x64)

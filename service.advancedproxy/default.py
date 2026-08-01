@@ -1,33 +1,53 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Profile manager UI entry (plugin source).
+"""Profile manager UI entry (xbmc.python.pluginsource).
 
-Invoked from settings action buttons via RunPlugin(plugin://service.advancedproxy/?action=...).
-Provides dialogs to add, manage, select, latency-test and clear profiles.
+Kodi calls default.py with argv[1] = directory handle (int) and argv[2] =
+query string (?action=...&tag=...). The root listing shows every configured
+profile as a clickable ListItem (click-to-switch in manual mode, warns in
+automatic mode) plus Add / Test / Clear / Settings actions. Per-profile
+Enable/Disable/Remove are offered through the context menu. Every call always
+finishes with xbmcplugin.endOfDirectory so Kodi closes the listing cleanly.
 """
 import os
+import socket
 import sys
 import time
-import urllib.parse
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(_HERE, "src"))
 
 import xbmc  # noqa: E402
+import xbmcaddon  # noqa: E402
 import xbmcgui  # noqa: E402
+import xbmcplugin  # noqa: E402
 
 from src import helpers, profiles  # noqa: E402
 
+ADDON_ID = helpers.ADDON_ID
 ADDON_NAME = "Advanced Proxy"
+BASE_URL = "plugin://%s/" % ADDON_ID
 
 
 def _log(msg):
-    xbmc.log("[%s] %s" % (helpers.ADDON_ID, msg), xbmc.LOGINFO)
+    xbmc.log("[%s] %s" % (ADDON_ID, msg), xbmc.LOGINFO)
+
+
+def _ls(loc_id):
+    return xbmcaddon.Addon(ADDON_ID).getLocalizedString(loc_id)
 
 
 def _store():
     return profiles.ProfileStore(helpers.profiles_path())
+
+
+def _settings():
+    return helpers.get_settings()
+
+
+def _mode():
+    return _settings().get("mode", "urltest")
 
 
 def _notify(msg, error=False):
@@ -35,136 +55,202 @@ def _notify(msg, error=False):
     xbmcgui.Dialog().notification(ADDON_NAME, msg, icon, 3000)
 
 
-def action_add():
-    kb = xbmcgui.Dialog().input(
-        "Add profile link (vless:// hy2:// trojan://)", type=xbmcgui.INPUT_ALPHANUM)
-    if not kb:
-        return
-    store = _store()
-    p, err = store.add_uri(kb)
-    if err:
-        _notify("Invalid link: %s" % err, error=True)
+def _profile_label(e):
+    latency = e.get("latency_ms")
+    if e["enabled"]:
+        latency_text = "%dms" % latency if latency is not None else "timeout"
     else:
-        _notify("Added: %s" % p["tag"])
-    _sync_info(store)
+        latency_text = "disabled"
+    label = "%s (%s) - %s" % (e["tag"], e["protocol"], latency_text)
+    if e["is_active"]:
+        return "[COLOR lime]%s[/COLOR]" % label
+    elif not e["enabled"]:
+        return "[COLOR slategrey]%s[/COLOR]" % label
+    return label
 
 
-def action_manage():
+def _profile_item(e):
+    liz = xbmcgui.ListItem(label=_profile_label(e))
+    liz.setProperty("isPlayable", "false")
+    ctx = []
+    if e["enabled"]:
+        ctx.append((_ls(32205), "RunPlugin(%s)" % e["toggle_url"]))
+    else:
+        ctx.append((_ls(32206), "RunPlugin(%s)" % e["toggle_url"]))
+    ctx.append((_ls(32204), "RunPlugin(%s)" % e["remove_url"]))
+    liz.addContextMenuItems(ctx)
+    return liz
+
+
+def _end(handle, ok):
+    if not xbmcplugin.endOfDirectory(handle, succeeded=ok):
+        _log("endOfDirectory(handle=%s, ok=%s) returned False" % (handle, ok))
+
+
+def _show_listing(handle):
     store = _store()
-    while True:
-        if not store.profiles:
-            _notify("No profiles. Add one first.")
-            return
-        items = []
-        for p in store.profiles:
-            mark = "[x]" if p.get("enabled", True) else "[ ]"
-            active = " *" if p["tag"] == store.active_tag else ""
-            items.append("%s %s (%s)%s" % (mark, p["tag"], p["protocol"], active))
-        items.append("<< Back")
-        idx = xbmcgui.Dialog().select("Manage profiles (* = active)", items)
-        if idx < 0 or idx == len(items) - 1:
-            _sync_info(store)
-            return
-        p = store.profiles[idx]
-        choice = xbmcgui.Dialog().contextmenu(
-            ["Enable/Disable", "Set active", "Delete", "Cancel"])
-        if choice == 0:
-            store.toggle(p["tag"])
-        elif choice == 1:
-            store.set_active(p["tag"])
-        elif choice == 2:
-            store.remove(p["tag"])
+    settings = _settings()
+    mode = settings.get("mode", "urltest")
+    latencies = helpers.measure_latencies(store.enabled(), timeout=2.0)
+    entries = helpers.build_directory_entries(store, mode, BASE_URL,
+                                              latencies=latencies)
+
+    st = helpers.read_proxy_state()
+    if st:
+        running = "RUNNING" if st.get("running") else "stopped"
+        port = st.get("port") or settings.get("local_port", 1080)
+        label = "Proxy: 127.0.0.1:%s (%s, %s, %s)" % (
+            port, st.get("engine", "?"), st.get("mode", "?"), running)
+        liz = xbmcgui.ListItem(label="[COLOR lime]%s[/COLOR]" % label
+                               if st.get("running") else label)
+        liz.setProperty("isPlayable", "false")
+        xbmcplugin.addDirectoryItem(handle, BASE_URL, liz, isFolder=False)
+
+    for e in entries:
+        kind = e["kind"]
+        if kind == "profile":
+            xbmcplugin.addDirectoryItem(handle, e["click_url"],
+                                        _profile_item(e), isFolder=False)
+        elif kind == "mode_toggle":
+            mode_label = _ls(32108) if mode == "urltest" else _ls(32109)
+            label = _ls(32220) % mode_label
+            liz = xbmcgui.ListItem(label=label)
+            liz.setProperty("isPlayable", "false")
+            xbmcplugin.addDirectoryItem(handle, e["url"], liz, isFolder=False)
+        else:
+            liz = xbmcgui.ListItem(label=_ls(e["str_id"]))
+            liz.setProperty("isPlayable", "false")
+            xbmcplugin.addDirectoryItem(handle, e["url"], liz, isFolder=False)
+    _end(handle, True)
 
 
-def action_select():
+def _finish_action(handle):
+    if handle < 0:
+        xbmc.executebuiltin("Container.Refresh")
+    else:
+        _show_listing(handle)
+
+
+def _action_add(handle):
+    kb = xbmcgui.Dialog().input(
+        _ls(32201), type=xbmcgui.INPUT_ALPHANUM)
+    if kb:
+        store = _store()
+        p, err = store.add_uri(kb)
+        if err:
+            _notify(_ls(32214), error=True)
+        else:
+            _notify(_ls(32213) % p["tag"])
+    _finish_action(handle)
+
+
+def _action_test(handle):
     store = _store()
     en = store.enabled()
     if not en:
-        _notify("No enabled profiles", error=True)
-        return
-    items = [p["tag"] for p in en]
-    preselect = items.index(store.active_tag) if store.active_tag in items else 0
-    idx = xbmcgui.Dialog().select("Select active profile", items, preselect=preselect)
-    if idx >= 0:
-        store.set_active(en[idx]["tag"])
-        _notify("Active: %s" % en[idx]["tag"])
-    _sync_info(store)
-
-
-def action_test():
-    store = _store()
-    en = store.enabled()
-    if not en:
-        _notify("No enabled profiles", error=True)
+        _notify(_ls(32218), error=True)
+        _finish_action(handle)
         return
     prog = xbmcgui.DialogProgress()
-    prog.create(ADDON_NAME, "Testing latency...")
+    prog.create(ADDON_NAME, _ls(32217))
     results = []
     try:
-        import socket
         for i, p in enumerate(en):
-            prog.update(int(100 * i / len(en)), "Testing %s..." % p["tag"])
-            ms = _tcp_latency(p["server"], p["port"], timeout=4)
+            if prog.iscanceled():
+                break
+            prog.update(int(100 * i / len(en)), _ls(32217) + " " + p["tag"])
+            ms = helpers._real_prober(p["server"], p["port"], timeout=4)
             results.append((p["tag"], ms))
-        prog.update(100, "Done")
+        prog.update(100)
     finally:
         prog.close()
     lines = ["%s: %s" % (t, ("%d ms" % m) if m is not None else "timeout")
              for t, m in sorted(results, key=lambda r: (r[1] is None, r[1]))]
-    xbmcgui.Dialog().textviewer("Latency (TCP connect)", "\n".join(lines))
+    xbmcgui.Dialog().textviewer(_ls(32209), "\n".join(lines))
+    _finish_action(handle)
 
 
-def _tcp_latency(host, port, timeout=4):
-    import socket
-    t0 = time.time()
-    try:
-        s = socket.create_connection((host, port), timeout=timeout)
-        s.close()
-        return int((time.time() - t0) * 1000)
-    except Exception:
-        return None
-
-
-def action_clear():
-    if xbmcgui.Dialog().yesno(ADDON_NAME, "Remove ALL profiles?"):
-        store = _store()
+def _action_clear(handle):
+    store = _store()
+    if not store.profiles:
+        _finish_action(handle)
+        return
+    n = len(store.profiles)
+    if xbmcgui.Dialog().yesno(ADDON_NAME, _ls(32216) % n):
         store.profiles = []
         store.active_tag = None
         store.save()
-        _notify("All profiles cleared")
-        _sync_info(store)
+    _finish_action(handle)
 
 
-def _sync_info(store):
-    """Reflect profile count + active profile into the settings info line."""
-    try:
-        import xbmcaddon
-        addon = xbmcaddon.Addon(helpers.ADDON_ID)
-        n = len(store.profiles)
-        en = len(store.enabled())
-        active = store.active_tag or "-"
-        addon.setSetting("profiles_info", "%d profiles (%d enabled) | active: %s" % (n, en, active))
-    except Exception as e:
-        _log("sync info failed: %s" % e)
+def _action_activate(handle, tag):
+    store = _store()
+    if _mode() == "manual":
+        p = store.get(tag)
+        if p and store.set_active(tag):
+            _notify(_ls(32212) % tag)
+        else:
+            _notify(_ls(32219), error=True)
+    else:
+        xbmcaddon.Addon(ADDON_ID).setSetting("mode", "1")
+        store = _store()
+        if store.set_active(tag):
+            _notify(_ls(32221) % tag)
+        else:
+            _notify(_ls(32219), error=True)
+    _finish_action(handle)
+
+
+def _action_toggle_mode(handle):
+    addon = xbmcaddon.Addon(ADDON_ID)
+    current = addon.getSetting("mode")
+    new_mode = "1" if current == "0" else "0"
+    addon.setSetting("mode", new_mode)
+    mode_label = _ls(32108) if new_mode == "0" else _ls(32109)
+    _notify(_ls(32220) % mode_label)
+    _finish_action(handle)
+
+
+def _action_toggle(handle, tag):
+    store = _store()
+    store.toggle(tag)
+    _finish_action(handle)
+
+
+def _action_remove(handle, tag):
+    store = _store()
+    store.remove(tag)
+    _finish_action(handle)
+
+
+def _action_settings(handle):
+    xbmcaddon.Addon(ADDON_ID).openSettings()
+    _finish_action(handle)
 
 
 def main():
-    # RunScript(service.advancedproxy,<action>) passes the action as sys.argv[1].
-    action = sys.argv[1] if len(sys.argv) > 1 else ""
-    _log("UI action: %s argv=%s" % (action, sys.argv))
+    handle, params = helpers.parse_plugin_args(sys.argv)
+    action = params.get("action", "")
+    _log("directory action=%s handle=%s params=%s" % (action, handle, params))
 
     if action == "add":
-        action_add()
-    elif action == "manage":
-        action_manage()
-    elif action == "select":
-        action_select()
+        _action_add(handle)
     elif action == "test":
-        action_test()
+        _action_test(handle)
     elif action == "clear":
-        action_clear()
+        _action_clear(handle)
+    elif action == "activate":
+        _action_activate(handle, params.get("tag", ""))
+    elif action == "toggle_mode":
+        _action_toggle_mode(handle)
+    elif action == "toggle":
+        _action_toggle(handle, params.get("tag", ""))
+    elif action == "remove":
+        _action_remove(handle, params.get("tag", ""))
+    elif action == "settings":
+        _action_settings(handle)
     else:
-        action_manage()
+        _show_listing(handle)
 
 
 if __name__ == "__main__":

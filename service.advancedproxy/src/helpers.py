@@ -4,7 +4,12 @@
 The ONLY module that touches xbmc* APIs, keeping the rest Kodi-free and
 unit-testable. In tests, `get_settings` is driven by an injected reader.
 """
+import json
 import os
+import socket
+import threading
+import time
+import urllib.parse
 
 ADDON_ID = "service.advancedproxy"
 
@@ -100,3 +105,109 @@ def config_path():
 
 def log_path():
     return os.path.join(profile_dir(), "engine.log")
+
+
+def state_path():
+    return os.path.join(profile_dir(), "state.json")
+
+
+def read_proxy_state():
+    """Read the runtime snapshot written by the supervisor, or None.
+
+    Kodi-free: used by the UI (default.py) to show the actual local port and
+    engine state without duplicating supervisor logic.
+    """
+    try:
+        with open(state_path()) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def parse_plugin_args(argv):
+    handle = -1
+    query = ""
+    if len(argv) > 1:
+        h = argv[1]
+        if h.lstrip("-").isdigit():
+            handle = int(h)
+        if len(argv) > 2:
+            query = argv[2]
+            if query.startswith("?"):
+                query = query[1:]
+    params = dict(urllib.parse.parse_qsl(query)) if query else {}
+    return handle, params
+
+
+def _real_prober(host, port, timeout):
+    t0 = time.time()
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+        s.close()
+        return int((time.time() - t0) * 1000)
+    except (socket.error, OSError):
+        return None
+
+
+def measure_latencies(profiles, prober=None, timeout=2.0):
+    """Return {tag: ms_or_None} for every profile.
+
+    Disabled profiles are reported as None and are not probed.
+    Enabled profiles are probed concurrently so total wall time is capped
+    near a single timeout.
+    """
+    prober = prober or _real_prober
+    results = {}
+    enabled = [p for p in profiles if p.get("enabled", True)]
+    lock = threading.Lock()
+
+    def run(p):
+        try:
+            ms = prober(p["server"], p["port"], timeout)
+        except (socket.error, OSError):
+            ms = None
+        with lock:
+            results[p["tag"]] = ms
+
+    threads = [threading.Thread(target=run, args=(p,)) for p in enabled]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=timeout + 0.5)
+
+    for p in profiles:
+        results.setdefault(p["tag"], None)
+    return results
+
+
+def build_directory_entries(store, mode, base_url, latencies=None):
+    latencies = latencies or {}
+    entries = [{"kind": "mode_toggle", "mode": mode,
+                "url": base_url + "?action=toggle_mode"}]
+    if not store.profiles:
+        entries.append({"kind": "info",
+                        "str_id": 32208,
+                        "url": base_url + "?action=add"})
+    for p in store.profiles:
+        tag_q = urllib.parse.urlencode({"tag": p["tag"]})
+        entries.append({
+            "kind": "profile",
+            "tag": p["tag"],
+            "protocol": p["protocol"],
+            "enabled": p.get("enabled", True),
+            "is_active": p["tag"] == store.active_tag,
+            "latency_ms": latencies.get(p["tag"]) if p.get("enabled", True) else None,
+            "click_url": base_url + "?action=activate&" + tag_q,
+            "toggle_url": base_url + "?action=toggle&" + tag_q,
+            "remove_url": base_url + "?action=remove&" + tag_q,
+        })
+    entries.append({"kind": "action", "action": "add", "str_id": 32200,
+                    "url": base_url + "?action=add"})
+    entries.append({"kind": "action", "action": "test", "str_id": 32202,
+                    "url": base_url + "?action=test"})
+    if store.profiles:
+        entries.append({"kind": "action", "action": "clear", "str_id": 32207,
+                        "url": base_url + "?action=clear"})
+    entries.append({"kind": "action", "action": "settings", "str_id": 32203,
+                    "url": base_url + "?action=settings"})
+    return entries
