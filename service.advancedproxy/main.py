@@ -88,12 +88,7 @@ def main():
                 sup.settings.setdefault("log_path", helpers.log_path())
                 if engine_or_mode_changed:
                     _xbmc_log("engine/mode/port changed, reconfiguring")
-                    sup.bin = sup._make_binary_manager()
-                    if sup.bin.is_running():
-                        sup.restart()
-                    elif new_settings.get("autostart") and sup.store.enabled():
-                        sup.start()
-                    started = sup.bin.is_running()
+                    started = sup.reconfigure_engine()
 
             # profiles changed via UI -> reload and apply
             mtime = _profiles_mtime(helpers.profiles_path())

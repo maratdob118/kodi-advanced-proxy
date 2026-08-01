@@ -1,4 +1,3 @@
-# Kodi language file for Advanced Proxy
 msgid ""
 msgstr ""
 "Project-Id-Version: service.advancedproxy\n"
@@ -6,221 +5,289 @@ msgstr ""
 "POT-Creation-Date: 2026-07-26 00:00+0000\n"
 "PO-Revision-Date: 2026-07-26 00:00+0000\n"
 "Last-Translator: \n"
-"Language-Team: \n"
-"Language: en\n"
+"Language-Team: English (United Kingdom)\n"
+"Language: en_gb\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-msgctxt "#32100"
-msgid "Engine"
+msgctxt "#32000"
+msgid "Connection"
 msgstr ""
 
-msgctxt "#32101"
-msgid "Proxy engine"
+msgctxt "#32001"
+msgid "Proxy engine, listening port and profile switching"
 msgstr ""
 
-msgctxt "#32102"
-msgid "Engine"
-msgstr ""
-
-msgctxt "#32103"
-msgid "Proxy core to run locally (sing-box supports Hysteria2; xray does not)"
-msgstr ""
-
-msgctxt "#32104"
-msgid "sing-box"
-msgstr ""
-
-msgctxt "#32105"
-msgid "Xray"
-msgstr ""
-
-msgctxt "#32106"
-msgid "Autostart"
-msgstr ""
-
-msgctxt "#32107"
-msgid "Start the proxy automatically when Kodi starts"
-msgstr ""
-
-msgctxt "#32108"
-msgid "Notifications"
-msgstr ""
-
-msgctxt "#32109"
-msgid "Show a notification when the active profile switches or the connection is lost"
-msgstr ""
-
-msgctxt "#32110"
-msgid "Proxy"
-msgstr ""
-
-msgctxt "#32111"
+msgctxt "#32002"
 msgid "Local proxy"
 msgstr ""
 
-msgctxt "#32112"
-msgid "Local port"
+msgctxt "#32003"
+msgid "Profile switching"
 msgstr ""
 
-msgctxt "#32113"
-msgid "Local proxy listen port (127.0.0.1) that Kodi proxy settings point to"
+msgctxt "#32004"
+msgid "Profiles"
 msgstr ""
 
-msgctxt "#32114"
-msgid "Switching mode"
+msgctxt "#32010"
+msgid "Service"
 msgstr ""
 
-msgctxt "#32115"
-msgid "urltest: auto-switch by latency; manual: use the selected profile"
+msgctxt "#32011"
+msgid "Startup behaviour and notifications"
 msgstr ""
 
-msgctxt "#32116"
-msgid "urltest (auto)"
+msgctxt "#32012"
+msgid "Startup"
 msgstr ""
 
-msgctxt "#32117"
-msgid "manual"
+msgctxt "#32020"
+msgid "Advanced"
 msgstr ""
 
-msgctxt "#32118"
+msgctxt "#32021"
+msgid "Binary location, protocol filtering and logging"
+msgstr ""
+
+msgctxt "#32022"
+msgid "Engine binary"
+msgstr ""
+
+msgctxt "#32023"
+msgid "Filtering and logging"
+msgstr ""
+
+msgctxt "#32100"
+msgid "Proxy engine"
+msgstr ""
+
+msgctxt "#32101"
+msgid "Which proxy core runs the connection. Xray does not support Hysteria2 profiles."
+msgstr ""
+
+msgctxt "#32102"
+msgid "sing-box"
+msgstr ""
+
+msgctxt "#32103"
+msgid "Xray"
+msgstr ""
+
+msgctxt "#32104"
+msgid "Local proxy port"
+msgstr ""
+
+msgctxt "#32105"
+msgid "Port the local proxy listens on (127.0.0.1). Point Kodi's network proxy at this port."
+msgstr ""
+
+msgctxt "#32106"
+msgid "Profile selection"
+msgstr ""
+
+msgctxt "#32107"
+msgid "Automatic picks the lowest-latency profile. Manual keeps the profile you chose in the profiles menu."
+msgstr ""
+
+msgctxt "#32108"
+msgid "Automatic (latency test)"
+msgstr ""
+
+msgctxt "#32109"
+msgid "Manual"
+msgstr ""
+
+msgctxt "#32110"
 msgid "Test interval"
 msgstr ""
 
+msgctxt "#32111"
+msgid "How often latency is measured, e.g. 3m or 90s."
+msgstr ""
+
+msgctxt "#32112"
+msgid "Latency tolerance (ms)"
+msgstr ""
+
+msgctxt "#32113"
+msgid "Switch only when another profile is faster than the current one by at least this many milliseconds."
+msgstr ""
+
+msgctxt "#32114"
+msgid "Latency test URL"
+msgstr ""
+
+msgctxt "#32115"
+msgid "URL used to measure latency of each profile."
+msgstr ""
+
+msgctxt "#32116"
+msgid "Interrupt existing connections on switch"
+msgstr ""
+
+msgctxt "#32117"
+msgid "Drop active connections when the proxy switches profile. Off keeps streams alive but they stay on the old profile."
+msgstr ""
+
+msgctxt "#32118"
+msgid "Open profiles menu"
+msgstr ""
+
 msgctxt "#32119"
-msgid "How often to probe profiles (e.g. 3m)"
+msgid "Add, remove and switch profiles."
 msgstr ""
 
 msgctxt "#32120"
-msgid "Tolerance (ms)"
+msgid "Start proxy with Kodi"
 msgstr ""
 
 msgctxt "#32121"
-msgid "Switch only when another profile is faster than the current by this many ms"
+msgid "Launch the proxy automatically when Kodi starts."
 msgstr ""
 
 msgctxt "#32122"
-msgid "Test URL"
+msgid "Show notifications"
 msgstr ""
 
 msgctxt "#32123"
-msgid "URL used to measure profile latency"
+msgid "Notify when the proxy starts, switches profile or loses connection."
 msgstr ""
 
 msgctxt "#32124"
-msgid "Interrupt existing connections"
-msgstr ""
-
-msgctxt "#32125"
-msgid "Drop active connections when the active profile changes"
-msgstr ""
-
-msgctxt "#32130"
-msgid "Profiles"
-msgstr ""
-
-msgctxt "#32131"
-msgid "Proxy profiles"
-msgstr ""
-
-msgctxt "#32132"
-msgid "Profiles"
-msgstr ""
-
-msgctxt "#32133"
-msgid "Add profile link..."
-msgstr ""
-
-msgctxt "#32134"
-msgid "Paste a vless:// hy2:// or trojan:// link"
-msgstr ""
-
-msgctxt "#32135"
-msgid "Manage profiles..."
-msgstr ""
-
-msgctxt "#32136"
-msgid "Enable, disable or delete profiles"
-msgstr ""
-
-msgctxt "#32137"
-msgid "Select active profile..."
-msgstr ""
-
-msgctxt "#32138"
-msgid "Choose the profile used in manual mode"
-msgstr ""
-
-msgctxt "#32139"
-msgid "Test profiles latency"
-msgstr ""
-
-msgctxt "#32140"
-msgid "Measure latency of all enabled profiles"
-msgstr ""
-
-msgctxt "#32141"
-msgid "Clear all profiles"
-msgstr ""
-
-msgctxt "#32142"
-msgid "Remove every stored profile"
-msgstr ""
-
-msgctxt "#32150"
-msgid "Advanced"
-msgstr ""
-
-msgctxt "#32151"
-msgid "Advanced"
-msgstr ""
-
-msgctxt "#32152"
 msgid "Skip protocols"
 msgstr ""
 
-msgctxt "#32153"
-msgid "Comma-separated protocols/transports to exclude (e.g. trojan,xhttp)"
+msgctxt "#32125"
+msgid "Comma separated protocols to ignore when building the config, e.g. trojan,xhttp."
 msgstr ""
 
-msgctxt "#32154"
-msgid "Log level"
-msgstr ""
-
-msgctxt "#32155"
-msgid "Engine log verbosity"
-msgstr ""
-
-msgctxt "#32156"
-msgid "debug"
-msgstr ""
-
-msgctxt "#32157"
-msgid "info"
-msgstr ""
-
-msgctxt "#32158"
-msgid "warn"
-msgstr ""
-
-msgctxt "#32159"
-msgid "error"
-msgstr ""
-
-msgctxt "#32160"
-msgid "Platform override"
-msgstr ""
-
-msgctxt "#32161"
-msgid "Force binary platform (e.g. linux_armv7) or 'auto'"
-msgstr ""
-
-msgctxt "#32162"
+msgctxt "#32126"
 msgid "Custom binary path"
 msgstr ""
 
-msgctxt "#32163"
-msgid "Optional: path to your own sing-box/xray binary. Leave empty to use the bundled one."
+msgctxt "#32127"
+msgid "Use your own engine binary instead of the bundled one. Leave empty for the bundled binary."
+msgstr ""
+
+msgctxt "#32128"
+msgid "Log level"
+msgstr ""
+
+msgctxt "#32129"
+msgid "Verbosity of the engine log."
+msgstr ""
+
+msgctxt "#32130"
+msgid "Debug"
+msgstr ""
+
+msgctxt "#32131"
+msgid "Info"
+msgstr ""
+
+msgctxt "#32132"
+msgid "Warning"
+msgstr ""
+
+msgctxt "#32133"
+msgid "Error"
+msgstr ""
+
+msgctxt "#32134"
+msgid "Platform override"
+msgstr ""
+
+msgctxt "#32135"
+msgid "Force the binary platform, e.g. linux_armv7. Use auto to detect."
+msgstr ""
+
+msgctxt "#32200"
+msgid "Add profile from link"
+msgstr ""
+
+msgctxt "#32201"
+msgid "Paste a vless://, hy2:// or trojan:// link"
+msgstr ""
+
+msgctxt "#32202"
+msgid "Test all profiles"
+msgstr ""
+
+msgctxt "#32203"
+msgid "Addon settings"
+msgstr ""
+
+msgctxt "#32204"
+msgid "Remove profile"
+msgstr ""
+
+msgctxt "#32205"
+msgid "Disable profile"
+msgstr ""
+
+msgctxt "#32206"
+msgid "Enable profile"
+msgstr ""
+
+msgctxt "#32207"
+msgid "Remove all profiles"
+msgstr ""
+
+msgctxt "#32208"
+msgid "No profiles yet. Use \"Add profile from link\"."
+msgstr ""
+
+msgctxt "#32209"
+msgid "Latency results"
+msgstr ""
+
+msgctxt "#32210"
+msgid "Active"
+msgstr ""
+
+msgctxt "#32211"
+msgid "Disabled"
+msgstr ""
+
+msgctxt "#32212"
+msgid "Switched to %s"
+msgstr ""
+
+msgctxt "#32213"
+msgid "Added %s"
+msgstr ""
+
+msgctxt "#32214"
+msgid "Not a supported profile link"
+msgstr ""
+
+msgctxt "#32215"
+msgid "Automatic selection is on. Switch to Manual in settings to pin a profile."
+msgstr ""
+
+msgctxt "#32216"
+msgid "Remove all %d profiles?"
+msgstr ""
+
+msgctxt "#32217"
+msgid "Testing profiles..."
+msgstr ""
+
+msgctxt "#32218"
+msgid "No profiles enabled. Enable or add one first."
+msgstr ""
+
+msgctxt "#32219"
+msgid "Profile is disabled"
+msgstr ""
+
+msgctxt "#32220"
+msgid "Mode: %s"
+msgstr ""
+
+msgctxt "#32221"
+msgid "Switched to %s (Manual mode enabled)"
 msgstr ""

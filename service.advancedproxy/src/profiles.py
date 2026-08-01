@@ -90,6 +90,9 @@ class ProfileStore(object):
             self.save()
 
     def set_active(self, tag):
-        if self.get(tag):
+        p = self.get(tag)
+        if p and p.get("enabled", True):
             self.active_tag = tag
             self.save()
+            return True
+        return False

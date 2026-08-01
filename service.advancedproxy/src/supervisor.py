@@ -12,6 +12,7 @@ import time
 import binary_manager
 import build_singbox
 import build_xray
+import port_utils
 import profiles
 
 
@@ -31,6 +32,7 @@ class ProxySupervisor(object):
         self.addon_dir = addon_dir
         self.work_dir = work_dir
         self.config_path = os.path.join(work_dir, "engine.json")
+        self.state_path = os.path.join(work_dir, "state.json")
         self.settings.setdefault("log_path", os.path.join(work_dir, "engine.log"))
         self.store = profiles.ProfileStore(
             os.path.join(work_dir, "profiles.json"))
@@ -42,6 +44,7 @@ class ProxySupervisor(object):
         self._restart_at = None
         self._was_running = False
         self._last_active_tag = None
+        self.effective_port = None
 
     def _make_binary_manager(self):
         return binary_manager.BinaryManager(
@@ -54,6 +57,32 @@ class ProxySupervisor(object):
         )
 
     # ----- config ----------------------------------------------------
+    def _resolve_effective_port(self):
+        """Pick the port the engine will actually listen on.
+
+        If the configured local_port is already taken (by a previously
+        installed sing-box/xray/shadowsocks or any other service), fall back
+        to the next free port so the proxy can always come up. The chosen port
+        is kept for the whole session for stability (Kodi's system proxy keeps
+        pointing at it) and only re-evaluated when the setting changes.
+        """
+        preferred = int(self.settings.get("local_port", 1080))
+        port = port_utils.find_free_port(preferred)
+        self.effective_port = port
+        if port != preferred:
+            self.log("port %d is busy, using %d instead"
+                     % (preferred, port), "warn")
+            self.notify("Port %d busy, proxy on %d" % (preferred, port),
+                        error=True)
+        return port
+
+    def _build_settings(self):
+        """Settings copy with the effective port injected for config gen."""
+        s = dict(self.settings)
+        if self.effective_port:
+            s["local_port"] = self.effective_port
+        return s
+
     def build_and_write_config(self):
         enabled = self.store.enabled()
         if not enabled:
@@ -63,10 +92,11 @@ class ProxySupervisor(object):
         try:
             engine = self.settings.get("engine", "sing-box")
             active = self.store.active_tag
+            build_settings = self._build_settings()
             if engine == "xray":
-                config, skipped = build_xray.build_config(enabled, self.settings, active)
+                config, skipped = build_xray.build_config(enabled, build_settings, active)
             else:
-                config, skipped = build_singbox.build_config(enabled, self.settings, active)
+                config, skipped = build_singbox.build_config(enabled, build_settings, active)
         except Exception as e:
             self.last_error = "config build failed: %s" % e
             self.log(self.last_error, "error")
@@ -95,24 +125,48 @@ class ProxySupervisor(object):
         return True
 
     # ----- lifecycle -------------------------------------------------
+    def _write_state(self):
+        """Persist a small runtime snapshot for the UI (default.py)."""
+        state = {
+            "engine": self.bin.engine,
+            "platform": self.bin.platform,
+            "mode": self.settings.get("mode"),
+            "port": self.effective_port or self.settings.get("local_port"),
+            "running": self.bin.is_running(),
+            "active": self.store.active_tag,
+            "last_error": self.last_error,
+        }
+        try:
+            tmp = self.state_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(state, f)
+            os.replace(tmp, self.state_path)
+        except OSError:
+            pass
+
     def start(self):
+        self._resolve_effective_port()
         if not self.build_and_write_config():
+            self._write_state()
             return False
         try:
             self.bin.start(self.config_path)
         except Exception as e:
             self.last_error = "failed to start %s: %s" % (self.bin.engine, e)
             self.log(self.last_error, "error")
+            self._write_state()
             return False
         self.last_reload = time.time()
         self.consecutive_failures = 0
         self._was_running = True
         self._last_active_tag = self.store.active_tag
+        self._write_state()
         return True
 
     def stop(self):
         self.bin.stop()
         self._was_running = False
+        self._write_state()
 
     def restart(self):
         """Rebuild config from current profiles/settings, then restart the engine."""
@@ -124,6 +178,23 @@ class ProxySupervisor(object):
         self.bin.restart(self.config_path)
         self._last_active_tag = self.store.active_tag
 
+    def reconfigure_engine(self):
+        """Rebuild self.bin after engine/mode/port settings changed.
+
+        Stops the currently running process through the OLD BinaryManager
+        instance before swapping in a new one, so the old process releases
+        its port before a new one tries to bind it. Replacing self.bin first
+        would silently orphan the old process (it holds the port forever).
+        """
+        was_running = self.bin.is_running()
+        if was_running:
+            self.bin.stop()
+        self.bin = self._make_binary_manager()
+        self._resolve_effective_port()
+        if was_running or (self.settings.get("autostart") and self.store.enabled()):
+            self.start()
+        return self.bin.is_running()
+
     # ----- tick ------------------------------------------------------
     def tick(self):
         now = time.time()
@@ -133,8 +204,10 @@ class ProxySupervisor(object):
                 self._was_running = True
                 self.consecutive_failures = 0
                 self._restart_at = None
+                self._write_state()
                 self.notify("%s proxy up on 127.0.0.1:%s"
-                            % (self.bin.engine, self.settings.get("local_port")))
+                            % (self.bin.engine,
+                               self.effective_port or self.settings.get("local_port")))
             self._watch_active_change()
             if now - self.last_reload >= self.reload_interval:
                 self.log("refreshing config")
@@ -146,6 +219,7 @@ class ProxySupervisor(object):
             self.bin.proc = None
             if self._was_running:
                 self._was_running = False
+                self._write_state()
                 self.notify("%s proxy stopped (code %s)" % (self.bin.engine, code), error=True)
             self.consecutive_failures += 1
             delay = min(2 ** self.consecutive_failures, 60)
@@ -186,6 +260,7 @@ class ProxySupervisor(object):
             "engine": self.bin.engine,
             "platform": self.bin.platform,
             "mode": self.settings.get("mode"),
+            "port": self.effective_port or self.settings.get("local_port"),
             "profiles": len(self.store.profiles),
             "enabled": len(self.store.enabled()),
             "active": self.store.active_tag,
