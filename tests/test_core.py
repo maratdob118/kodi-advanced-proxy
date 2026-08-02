@@ -4,6 +4,8 @@
 Run:  python3 tests/test_core.py
 No Kodi required; xbmc modules are never imported by the tested code.
 """
+import contextlib
+import importlib.util
 import json
 import os
 import re
@@ -15,6 +17,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "..", "service.advancedproxy", "src")
+ADDON_DIR = os.path.abspath(os.path.join(HERE, "..", "service.advancedproxy"))
 sys.path.insert(0, os.path.abspath(SRC))
 
 import binary_manager  # noqa: E402
@@ -133,6 +136,16 @@ class TestBuildSingbox(unittest.TestCase):
         sel = [o for o in cfg["outbounds"] if o["type"] == "selector"][0]
         self.assertEqual(sel["default"], "AUTO:Hysteria2")
 
+    def test_private_ip_traffic_goes_direct(self):
+        profs, _ = parsers.parse_lines([VLESS, HY2])
+        cfg, _ = build_singbox.build_config(profs, self._settings())
+        self.assertEqual(cfg["route"]["rules"], [
+            {"action": "sniff"},
+            {"protocol": "dns", "action": "hijack-dns"},
+            {"ip_is_private": True, "action": "route", "outbound": "direct"},
+        ])
+        self.assertEqual(cfg["route"]["final"], "proxy")
+
     def test_skip_xhttp(self):
         profs, _ = parsers.parse_lines([VLESS, XHTTP])
         cfg, skipped = build_singbox.build_config(profs, self._settings())
@@ -170,6 +183,23 @@ class TestBuildXray(unittest.TestCase):
         rule = [r for r in cfg["routing"]["rules"] if r.get("outboundTag") == "AUTO:Trojan"]
         self.assertTrue(rule)
 
+    def test_private_ip_traffic_goes_direct(self):
+        profs, _ = parsers.parse_lines([VLESS, TROJAN])
+        for mode in ("urltest", "manual"):
+            with self.subTest(mode=mode):
+                cfg, _ = build_xray.build_config(
+                    profs, self._settings(mode=mode), active_tag="AUTO:Trojan")
+                rules = cfg["routing"]["rules"]
+                self.assertEqual(rules[0], {
+                    "type": "field",
+                    "ip": ["geoip:private"],
+                    "outboundTag": "direct",
+                })
+                self.assertEqual(rules[1]["network"], "tcp,udp")
+                expected = ("balancerTag", "proxy") if mode == "urltest" else (
+                    "outboundTag", "AUTO:Trojan")
+                self.assertEqual(rules[1][expected[0]], expected[1])
+
     def test_socks_inbound(self):
         profs, _ = parsers.parse_lines([VLESS])
         cfg, _ = build_xray.build_config(profs, self._settings())
@@ -196,6 +226,13 @@ class TestHelpers(unittest.TestCase):
         self.assertIs(s["notify"], False)
         self.assertEqual(s["local_port"], 8080)
         self.assertEqual(s["log_level"], "warn")
+
+    def test_auto_configure_integration_defaults_true(self):
+        self.assertTrue(helpers.get_settings(reader=lambda: {})["auto_configure_integration"])
+
+    def test_auto_configure_integration_can_be_disabled(self):
+        raw = {"auto_configure_integration": "false"}
+        self.assertFalse(helpers.get_settings(reader=lambda: raw)["auto_configure_integration"])
 
 
 class TestBinaryManager(unittest.TestCase):
@@ -654,6 +691,1016 @@ class TestPluginActionRefresh(unittest.TestCase):
         activate = src[start:end]
         self.assertIn("_finish_action(handle)", activate)
         self.assertNotIn("_show_listing(handle)", activate)
+
+
+class _FakeAddon(object):
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+        self.calls = []
+
+    def getSettingInt(self, key):
+        self.calls.append(("getSettingInt", key))
+        return self.values.get(key, 0)
+
+    def getSetting(self, key):
+        self.calls.append(("getSetting", key))
+        return str(self.values.get(key, ""))
+
+    def setSettingInt(self, key, value):
+        self.calls.append(("setSettingInt", key, value))
+        return True
+
+    def setSettingBool(self, key, value):
+        self.calls.append(("setSettingBool", key, value))
+        return True
+
+    def setSetting(self, key, value):
+        self.calls.append(("setSetting", key, value))
+        return True
+
+
+class _FakeXbmcAddon(object):
+    def __init__(self, addon=None, missing=()):
+        self._addon = addon or _FakeAddon()
+        self._missing = set(missing)
+
+    def Addon(self, addon_id=None):
+        if addon_id in self._missing:
+            raise RuntimeError("Addon '%s' not installed" % addon_id)
+        return self._addon
+
+
+class _FakeXbmc(object):
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+
+    def executeJSONRPC(self, request):
+        self.calls.append(request)
+        if not self._responses:
+            return ""
+        resp = self._responses.pop(0)
+        return resp(request) if callable(resp) else resp
+
+
+@contextlib.contextmanager
+def _kodi_module(module_name, fake):
+    saved = sys.modules.get(module_name)
+    sys.modules[module_name] = fake
+    try:
+        yield
+    finally:
+        if saved is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = saved
+
+
+class TestKodiAdapters(unittest.TestCase):
+    ADAPTERS = (
+        "read_kodi_proxy_setting", "write_kodi_proxy_setting", "addon_available",
+        "read_addon_setting", "write_addon_setting", "integration_backup_path",
+    )
+
+
+    def test_all_adapter_names_exported_and_callable(self):
+        for name in self.ADAPTERS:
+            self.assertTrue(callable(getattr(helpers, name, None)), name)
+
+    def test_helpers_module_has_no_module_level_xbmc_import(self):
+        with open(os.path.join(SRC, "helpers.py")) as f:
+            src = f.read()
+        for lineno, line in enumerate(src.splitlines(), 1):
+            if re.match(r"^(import xbmc|from xbmc)", line):
+                self.fail("module-level xbmc import at line %d: %s" % (lineno, line))
+
+    def test_lazy_xbmc_imports_present_and_indented(self):
+        with open(os.path.join(SRC, "helpers.py")) as f:
+            src = f.read()
+        self.assertTrue(re.search(r"^\s+import xbmc$", src, re.M),
+                        "missing lazy 'import xbmc'")
+        self.assertTrue(re.search(r"^\s+import xbmcaddon$", src, re.M),
+                        "missing lazy 'import xbmcaddon'")
+
+
+    def test_read_kodi_proxy_setting_returns_value(self):
+        fake = _FakeXbmc(['{"id":1,"jsonrpc":"2.0","result":{"value":1080}}'])
+        with _kodi_module("xbmc", fake):
+            self.assertEqual(
+                helpers.read_kodi_proxy_setting("network.httpproxyport"), 1080)
+
+    def test_read_kodi_proxy_setting_sends_get_setting_value(self):
+        fake = _FakeXbmc(['{"id":1,"jsonrpc":"2.0","result":{"value":1}}'])
+        with _kodi_module("xbmc", fake):
+            helpers.read_kodi_proxy_setting("network.usehttpproxy")
+        req = json.loads(fake.calls[0])
+        self.assertEqual(req["jsonrpc"], "2.0")
+        self.assertEqual(req["method"], "Settings.GetSettingValue")
+        self.assertEqual(req["params"], {"setting": "network.usehttpproxy"})
+
+    def test_read_kodi_proxy_setting_malformed_json_is_none(self):
+        fake = _FakeXbmc(["not json at all"])
+        with _kodi_module("xbmc", fake):
+            self.assertIsNone(
+                helpers.read_kodi_proxy_setting("network.usehttpproxy"))
+
+    def test_read_kodi_proxy_setting_error_response_is_none(self):
+        fake = _FakeXbmc(['{"id":1,"jsonrpc":"2.0","error":{"code":-32602,"message":"x"}}'])
+        with _kodi_module("xbmc", fake):
+            self.assertIsNone(
+                helpers.read_kodi_proxy_setting("network.usehttpproxy"))
+
+    def test_read_kodi_proxy_setting_empty_response_is_none(self):
+        fake = _FakeXbmc([""])
+        with _kodi_module("xbmc", fake):
+            self.assertIsNone(
+                helpers.read_kodi_proxy_setting("network.usehttpproxy"))
+
+    def test_read_kodi_proxy_setting_without_xbmc_is_none(self):
+        self.assertIsNone(helpers.read_kodi_proxy_setting("network.usehttpproxy"))
+
+    def test_read_kodi_proxy_setting_non_dict_result_is_none(self):
+        fake = _FakeXbmc(['{"id":1,"jsonrpc":"2.0","result":true}'])
+        with _kodi_module("xbmc", fake):
+            self.assertIsNone(
+                helpers.read_kodi_proxy_setting("network.usehttpproxy"))
+
+    def test_write_kodi_proxy_setting_sends_set_setting_value(self):
+        fake = _FakeXbmc(['{"id":1,"jsonrpc":"2.0","result":true}'])
+        with _kodi_module("xbmc", fake):
+            self.assertTrue(
+                helpers.write_kodi_proxy_setting("network.usehttpproxy", True))
+        req = json.loads(fake.calls[0])
+        self.assertEqual(req["method"], "Settings.SetSettingValue")
+        self.assertEqual(req["params"],
+                         {"setting": "network.usehttpproxy", "value": True})
+
+    def test_write_kodi_proxy_setting_failures_are_false(self):
+        for resp in (["bad json"],
+                     ['{"id":1,"jsonrpc":"2.0","error":{"code":1,"message":"e"}}'],
+                     ['{"id":1,"jsonrpc":"2.0","result":false}'],
+                     [""]):
+            fake = _FakeXbmc(resp)
+            with _kodi_module("xbmc", fake):
+                self.assertFalse(
+                    helpers.write_kodi_proxy_setting("network.usehttpproxy", True))
+
+    def test_write_kodi_proxy_setting_without_xbmc_is_false(self):
+        self.assertFalse(
+            helpers.write_kodi_proxy_setting("network.usehttpproxy", True))
+
+
+    def test_addon_available_true_for_installed(self):
+        fake = _FakeXbmcAddon(addon=_FakeAddon())
+        with _kodi_module("xbmcaddon", fake):
+            self.assertTrue(helpers.addon_available("plugin.video.youtube"))
+
+    def test_addon_available_false_for_missing(self):
+        fake = _FakeXbmcAddon(addon=_FakeAddon(),
+                              missing=("plugin.video.youtube",))
+        with _kodi_module("xbmcaddon", fake):
+            self.assertFalse(helpers.addon_available("plugin.video.youtube"))
+
+    def test_addon_available_false_without_xbmcaddon(self):
+        self.assertFalse(helpers.addon_available("plugin.video.youtube"))
+
+    def test_read_addon_setting_youtube_proxy_source_uses_typed_int_accessor(self):
+        addon = _FakeAddon({"requests.proxy.source": 1})
+        fake = _FakeXbmcAddon(addon=addon)
+        with _kodi_module("xbmcaddon", fake):
+            value = helpers.read_addon_setting(
+                "plugin.video.youtube", "requests.proxy.source")
+        self.assertEqual(value, 1)
+        self.assertIn(("getSettingInt", "requests.proxy.source"), addon.calls)
+
+    def test_read_addon_setting_generic_string_stays_string(self):
+        addon = _FakeAddon({"some.text": "hello"})
+        fake = _FakeXbmcAddon(addon=addon)
+        with _kodi_module("xbmcaddon", fake):
+            value = helpers.read_addon_setting("plugin.video.youtube", "some.text")
+        self.assertEqual(value, "hello")
+
+    def test_read_addon_setting_generic_numeric_coerces_to_int(self):
+        addon = _FakeAddon({"some.number": "42"})
+        fake = _FakeXbmcAddon(addon=addon)
+        with _kodi_module("xbmcaddon", fake):
+            value = helpers.read_addon_setting("plugin.video.youtube", "some.number")
+        self.assertEqual(value, 42)
+
+    def test_read_addon_setting_generic_bool_coerces(self):
+        addon = _FakeAddon({"some.flag": "false"})
+        fake = _FakeXbmcAddon(addon=addon)
+        with _kodi_module("xbmcaddon", fake):
+            self.assertFalse(
+                helpers.read_addon_setting("plugin.video.youtube", "some.flag"))
+
+    def test_read_addon_setting_missing_addon_is_none(self):
+        fake = _FakeXbmcAddon(addon=_FakeAddon(),
+                              missing=("plugin.video.youtube",))
+        with _kodi_module("xbmcaddon", fake):
+            self.assertIsNone(helpers.read_addon_setting(
+                "plugin.video.youtube", "requests.proxy.source"))
+
+    def test_write_addon_setting_youtube_proxy_source_uses_typed_int_accessor(self):
+        addon = _FakeAddon()
+        fake = _FakeXbmcAddon(addon=addon)
+        with _kodi_module("xbmcaddon", fake):
+            ok = helpers.write_addon_setting(
+                "plugin.video.youtube", "requests.proxy.source", 1)
+        self.assertTrue(ok)
+        self.assertIn(("setSettingInt", "requests.proxy.source", 1), addon.calls)
+
+    def test_write_addon_setting_bool_uses_set_setting_bool(self):
+        addon = _FakeAddon()
+        fake = _FakeXbmcAddon(addon=addon)
+        with _kodi_module("xbmcaddon", fake):
+            ok = helpers.write_addon_setting(
+                "plugin.video.youtube", "some.flag", False)
+        self.assertTrue(ok)
+        self.assertIn(("setSettingBool", "some.flag", False), addon.calls)
+
+    def test_write_addon_setting_int_uses_set_setting_int(self):
+        addon = _FakeAddon()
+        fake = _FakeXbmcAddon(addon=addon)
+        with _kodi_module("xbmcaddon", fake):
+            ok = helpers.write_addon_setting(
+                "plugin.video.youtube", "some.number", 7)
+        self.assertTrue(ok)
+        self.assertIn(("setSettingInt", "some.number", 7), addon.calls)
+
+    def test_write_addon_setting_string_uses_set_setting(self):
+        addon = _FakeAddon()
+        fake = _FakeXbmcAddon(addon=addon)
+        with _kodi_module("xbmcaddon", fake):
+            ok = helpers.write_addon_setting(
+                "plugin.video.youtube", "some.text", "hi")
+        self.assertTrue(ok)
+        self.assertIn(("setSetting", "some.text", "hi"), addon.calls)
+
+    def test_write_addon_setting_missing_addon_is_false(self):
+        fake = _FakeXbmcAddon(addon=_FakeAddon(),
+                              missing=("plugin.video.youtube",))
+        with _kodi_module("xbmcaddon", fake):
+            self.assertFalse(helpers.write_addon_setting(
+                "plugin.video.youtube", "requests.proxy.source", 1))
+
+
+    def test_integration_backup_path_under_profile_dir(self):
+        path = helpers.integration_backup_path()
+        self.assertTrue(path.endswith("integration_backup.json"))
+        self.assertEqual(os.path.dirname(path), helpers.profile_dir())
+
+
+# ----------------------------------------------------------------------
+# service lifecycle wiring (main.py)
+# ----------------------------------------------------------------------
+
+INTEGRATION_HOST = "127.0.0.1"
+
+
+class _FakeMonitor(object):
+    """xbmc.Monitor stand-in that aborts after `iterations` loop passes."""
+
+    def __init__(self, iterations=1):
+        self._left = iterations
+
+    def abortRequested(self):
+        return self._left <= 0
+
+    def waitForAbort(self, seconds):
+        self._left -= 1
+        return self._left <= 0
+
+
+class _FakeXbmcModule(object):
+    LOGDEBUG, LOGINFO, LOGWARNING, LOGERROR = 0, 1, 2, 3
+
+    def __init__(self):
+        self.messages = []
+        self.Monitor = _FakeMonitor
+
+    def log(self, msg, level=1):
+        self.messages.append((msg, level))
+
+
+class _FakeDialog(object):
+    def __init__(self, sink):
+        self._sink = sink
+
+    def notification(self, heading, msg, icon, millis):
+        self._sink.append((msg, icon))
+
+
+class _FakeXbmcGui(object):
+    NOTIFICATION_INFO = "info"
+    NOTIFICATION_ERROR = "error"
+
+    def __init__(self):
+        self.notifications = []
+
+    def Dialog(self):
+        return _FakeDialog(self.notifications)
+
+
+class _LogRecorder(object):
+    def __init__(self):
+        self.entries = []
+
+    def __call__(self, msg, level="info"):
+        self.entries.append((level, msg))
+
+    def of_level(self, level):
+        return [msg for lvl, msg in self.entries if lvl == level]
+
+
+class _NotifyRecorder(object):
+    def __init__(self):
+        self.messages = []
+
+    def __call__(self, msg, error=False):
+        self.messages.append((msg, error))
+
+
+class _FakeIntegrationManager(object):
+    """Behavioral IntegrationManager stand-in.
+
+    Emulates the real contract closely enough to assert lifecycle ordering:
+    a successful ensure leaves a backup behind, a successful restore consumes
+    it, and validate reports whether our values are still in place.
+    """
+
+    def __init__(self, calls=None, backup=False, ensure=True, restore=True,
+                 validate=None, raises=()):
+        self.calls = calls if calls is not None else []
+        self.backup = backup
+        self.backup_checks = 0
+        self._ensure = ensure
+        self._restore = restore
+        self._validate = validate
+        self._raises = set(raises)
+
+    def ensure_configured(self, host, port):
+        self.calls.append(("ensure", host, port))
+        self._maybe_raise("ensure_configured")
+        if self._ensure:
+            self.backup = True
+        return self._ensure
+
+    def validate(self, host, port):
+        self.calls.append(("validate", host, port))
+        self._maybe_raise("validate")
+        if self._validate is not None:
+            return self._validate
+        return self.backup
+
+    def restore_previous(self):
+        self.calls.append(("restore",))
+        self._maybe_raise("restore_previous")
+        if self._restore:
+            self.backup = False
+        return self._restore
+
+    def backup_exists(self):
+        self.backup_checks += 1
+        self._maybe_raise("backup_exists")
+        return self.backup
+
+    def _maybe_raise(self, name):
+        if name in self._raises:
+            raise RuntimeError("%s exploded" % name)
+
+    @property
+    def writes(self):
+        return [c for c in self.calls if c[0] in ("ensure", "restore")]
+
+
+class _FakeEngine(object):
+    def __init__(self):
+        self.engine = "sing-box"
+        self.running = False
+
+    def is_running(self):
+        return self.running
+
+
+class _FakeStore(object):
+    def __init__(self, enabled=True):
+        self.active_tag = None
+        self._enabled = enabled
+
+    def enabled(self):
+        return [{"tag": "p"}] if self._enabled else []
+
+
+class _FakeSupervisor(object):
+    """ProxySupervisor stand-in recording into the shared call log.
+
+    `start`/`reconfigure_engine` emulate the busy-port fallback by landing on
+    `local_port + 1`, so tests can tell the effective port apart from the
+    configured one.
+    """
+
+    def __init__(self, calls, settings, start_ok=True, profiles_enabled=True):
+        self.calls = calls
+        self.settings = dict(settings)
+        self.store = _FakeStore(profiles_enabled)
+        self.bin = _FakeEngine()
+        self.effective_port = None
+        self.last_error = "start failed"
+        self.start_ok = start_ok
+
+    def _bring_up(self):
+        if not self.start_ok:
+            self.bin.running = False
+            return False
+        self.effective_port = int(self.settings.get("local_port", 1080)) + 1
+        self.bin.running = True
+        return True
+
+    def start(self):
+        self.calls.append(("sup.start",))
+        return self._bring_up()
+
+    def stop(self):
+        self.calls.append(("sup.stop",))
+        self.bin.running = False
+
+    def reconfigure_engine(self):
+        self.calls.append(("sup.reconfigure",))
+        return self._bring_up()
+
+    def reload_profiles(self):
+        self.calls.append(("sup.reload_profiles",))
+
+    def restart(self):
+        self.calls.append(("sup.restart",))
+
+    def tick(self):
+        pass
+
+
+@contextlib.contextmanager
+def _patched(obj, name, value):
+    saved = getattr(obj, name)
+    setattr(obj, name, value)
+    try:
+        yield
+    finally:
+        setattr(obj, name, saved)
+
+
+def _import_main():
+    """Load service.advancedproxy/main.py against fake xbmc modules."""
+    with _kodi_module("xbmc", _FakeXbmcModule()), \
+            _kodi_module("xbmcgui", _FakeXbmcGui()):
+        spec = importlib.util.spec_from_file_location(
+            "advancedproxy_main", os.path.join(ADDON_DIR, "main.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    return module
+
+
+def _settings(**over):
+    base = {
+        "engine": "sing-box", "mode": "urltest", "local_port": 1080,
+        "autostart": True, "notify": True, "auto_configure_integration": True,
+    }
+    base.update(over)
+    return base
+
+
+def _run_main(settings_seq, manager, start_ok=True, profiles_enabled=True,
+              iterations=1, mtimes=None):
+    """Run main() end to end against fakes; returns (module, supervisor)."""
+    module = _import_main()
+    tmp = tempfile.mkdtemp()
+    seq = [dict(s) for s in settings_seq]
+    holder = {}
+
+    def _get_settings(reader=None):
+        return dict(seq.pop(0) if len(seq) > 1 else seq[0])
+
+    def _make_supervisor(**kwargs):
+        holder["sup"] = _FakeSupervisor(
+            manager.calls, kwargs["settings"], start_ok=start_ok,
+            profiles_enabled=profiles_enabled)
+        return holder["sup"]
+
+    with contextlib.ExitStack() as stack:
+        patch = stack.enter_context
+        patch(_patched(module.helpers, "get_settings", _get_settings))
+        patch(_patched(module.helpers, "profile_dir", lambda: tmp))
+        patch(_patched(module.helpers, "profiles_path",
+                       lambda: os.path.join(tmp, "profiles.json")))
+        patch(_patched(module.helpers, "log_path",
+                       lambda: os.path.join(tmp, "engine.log")))
+        patch(_patched(module.supervisor, "ProxySupervisor", _make_supervisor))
+        patch(_patched(module, "build_integration_manager",
+                       lambda logger=None, notify=None: manager))
+        patch(_patched(module.xbmc, "Monitor", lambda: _FakeMonitor(iterations)))
+        if mtimes is not None:
+            stamps = list(mtimes)
+            patch(_patched(module, "_profiles_mtime",
+                           lambda path: stamps.pop(0) if len(stamps) > 1
+                           else stamps[0]))
+        module.main()
+    return module, holder["sup"]
+
+
+class TestIntegrationManagerConstruction(unittest.TestCase):
+    def setUp(self):
+        self.main = _import_main()
+        self.built = {}
+
+        def _recorder(**kwargs):
+            self.built.update(kwargs)
+            return "manager"
+
+        self.recorder = _recorder
+
+    @contextlib.contextmanager
+    def _building(self, **over):
+        """Build the manager and keep the helper patches alive for the body.
+
+        The adapters must be exercised while patched: ``addon_available`` is
+        a closure that resolves ``helpers`` at call time.
+        """
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(_patched(self.main.proxy_integration,
+                                         "IntegrationManager", self.recorder))
+            for name, value in over.items():
+                stack.enter_context(_patched(self.main.helpers, name, value))
+            self.main.build_integration_manager()
+            yield self.built
+
+    def test_manager_is_built_from_helper_backup_path(self):
+        with self._building(integration_backup_path=lambda: "/tmp/backup.json") as built:
+            self.assertEqual(built["backup_path"], "/tmp/backup.json")
+
+    def test_kodi_adapters_delegate_to_helpers(self):
+        reads, writes = [], []
+        with self._building(
+                read_kodi_proxy_setting=lambda sid: reads.append(sid) or 7,
+                write_kodi_proxy_setting=lambda sid, v: writes.append((sid, v)) or True) as built:
+            self.assertEqual(built["read_kodi"]("network.httpproxyport"), 7)
+            self.assertTrue(built["write_kodi"]("network.httpproxyport", 1081))
+        self.assertEqual(reads, ["network.httpproxyport"])
+        self.assertEqual(writes, [("network.httpproxyport", 1081)])
+
+    def test_addon_available_is_zero_arg_and_asks_for_youtube(self):
+        asked = []
+        with self._building(
+                addon_available=lambda addon_id: asked.append(addon_id) or True) as built:
+            self.assertTrue(built["addon_available"]())
+        self.assertEqual(asked, [self.main.proxy_integration.YOUTUBE_ADDON_ID])
+
+    def test_addon_adapters_delegate_to_helpers(self):
+        reads, writes = [], []
+        with self._building(
+                read_addon_setting=lambda a, s: reads.append((a, s)) or 0,
+                write_addon_setting=lambda a, s, v: writes.append((a, s, v)) or True) as built:
+            self.assertEqual(built["read_addon"]("plugin.video.youtube",
+                                                 "requests.proxy.source"), 0)
+            self.assertTrue(built["write_addon"]("plugin.video.youtube",
+                                                 "requests.proxy.source", 1))
+        self.assertEqual(reads, [("plugin.video.youtube", "requests.proxy.source")])
+        self.assertEqual(writes,
+                         [("plugin.video.youtube", "requests.proxy.source", 1)])
+
+    def test_logger_and_notify_are_forwarded(self):
+        log, notify = _LogRecorder(), _NotifyRecorder()
+        with _patched(self.main.proxy_integration, "IntegrationManager",
+                      self.recorder):
+            self.main.build_integration_manager(log, notify)
+        self.assertIs(self.built["logger"], log)
+        self.assertIs(self.built["notify"], notify)
+
+    def test_real_manager_is_constructible_with_helper_adapters(self):
+        tmp = tempfile.mkdtemp()
+        with _patched(self.main.helpers, "integration_backup_path",
+                      lambda: os.path.join(tmp, "integration_backup.json")):
+            manager = self.main.build_integration_manager()
+        self.assertIsInstance(manager,
+                              self.main.proxy_integration.IntegrationManager)
+        # adapters are unusable outside Kodi, but must degrade instead of raise
+        self.assertFalse(manager.ensure_configured(INTEGRATION_HOST, 1081))
+        self.assertFalse(manager.backup_exists())
+
+
+class TestIntegrationLifecycle(unittest.TestCase):
+    def setUp(self):
+        self.main = _import_main()
+        self.log = _LogRecorder()
+        self.notify = _NotifyRecorder()
+
+    def _lifecycle(self, manager):
+        return self.main.IntegrationLifecycle(manager, self.log, self.notify)
+
+    def test_ensures_localhost_and_effective_port_when_running(self):
+        manager = _FakeIntegrationManager()
+        self.assertTrue(self._lifecycle(manager).sync(True, True, 1081))
+        self.assertEqual(manager.calls, [("ensure", INTEGRATION_HOST, 1081)])
+
+    def test_does_not_ensure_while_disabled(self):
+        manager = _FakeIntegrationManager()
+        self.assertFalse(self._lifecycle(manager).sync(False, True, 1081))
+        self.assertEqual(manager.calls, [])
+
+    def test_does_not_ensure_when_proxy_is_not_running(self):
+        manager = _FakeIntegrationManager()
+        self.assertFalse(self._lifecycle(manager).sync(True, False, 1081))
+        self.assertEqual(manager.calls, [])
+
+    def test_does_not_ensure_without_an_effective_port(self):
+        manager = _FakeIntegrationManager()
+        self.assertFalse(self._lifecycle(manager).sync(True, True, None))
+        self.assertEqual(manager.calls, [])
+
+    def test_disabling_restores_then_validates_read_only(self):
+        manager = _FakeIntegrationManager(backup=True)
+        self._lifecycle(manager).sync(False, True, 1081)
+        self.assertEqual(manager.calls,
+                         [("restore",), ("validate", INTEGRATION_HOST, 1081)])
+
+    def test_disabling_warns_when_settings_still_point_at_the_proxy(self):
+        manager = _FakeIntegrationManager(backup=True, validate=True)
+        self._lifecycle(manager).sync(False, True, 1081)
+        self.assertTrue(any("1081" in msg for msg in self.log.of_level("warn")),
+                        self.log.entries)
+        self.assertEqual([c for c in manager.calls if c[0] == "ensure"], [])
+
+    def test_disabling_without_backup_touches_nothing(self):
+        manager = _FakeIntegrationManager(backup=False)
+        self._lifecycle(manager).sync(False, True, 1081)
+        self.assertEqual(manager.calls, [])
+
+    def test_re_enabling_ensures_again(self):
+        manager = _FakeIntegrationManager(backup=True)
+        lifecycle = self._lifecycle(manager)
+        lifecycle.sync(False, True, 1081)
+        manager.calls[:] = []
+        self.assertTrue(lifecycle.sync(True, True, 1081))
+        self.assertEqual(manager.calls, [("ensure", INTEGRATION_HOST, 1081)])
+
+    def test_stale_backup_is_restored_when_nothing_is_running(self):
+        manager = _FakeIntegrationManager(backup=True)
+        self._lifecycle(manager).sync(True, False, 1080)
+        self.assertEqual(manager.calls, [("restore",)])
+
+    def test_shutdown_restores_previous_values(self):
+        manager = _FakeIntegrationManager(backup=True)
+        self.assertTrue(self._lifecycle(manager).shutdown())
+        self.assertEqual(manager.calls, [("restore",)])
+
+    def test_shutdown_without_backup_does_not_write(self):
+        manager = _FakeIntegrationManager(backup=False)
+        self.assertFalse(self._lifecycle(manager).shutdown())
+        self.assertEqual(manager.calls, [])
+
+    def test_failed_ensure_is_logged_and_notified(self):
+        manager = _FakeIntegrationManager(ensure=False)
+        self.assertFalse(self._lifecycle(manager).sync(True, True, 1081))
+        self.assertTrue(self.log.of_level("warn"))
+        self.assertTrue(any(err for _, err in self.notify.messages))
+
+    def test_raising_manager_never_propagates_on_ensure(self):
+        manager = _FakeIntegrationManager(raises=("ensure_configured",))
+        self.assertFalse(self._lifecycle(manager).sync(True, True, 1081))
+        self.assertTrue(self.log.of_level("error"))
+
+    def test_raising_manager_never_propagates_on_restore(self):
+        manager = _FakeIntegrationManager(backup=True,
+                                          raises=("restore_previous",))
+        self.assertFalse(self._lifecycle(manager).shutdown())
+        self.assertTrue(self.log.of_level("error"))
+
+    def test_raising_backup_probe_never_propagates(self):
+        manager = _FakeIntegrationManager(raises=("backup_exists",))
+        self.assertFalse(self._lifecycle(manager).shutdown())
+        self.assertTrue(self.log.of_level("error"))
+
+    def test_broken_logger_and_notifier_are_survivable(self):
+        def boom(*args, **kwargs):
+            raise RuntimeError("logger down")
+
+        manager = _FakeIntegrationManager(ensure=False)
+        lifecycle = self.main.IntegrationLifecycle(manager, boom, boom)
+        self.assertFalse(lifecycle.sync(True, True, 1081))
+
+
+class TestMainLifecycleWiring(unittest.TestCase):
+    def test_successful_autostart_configures_effective_port(self):
+        manager = _FakeIntegrationManager()
+        _run_main([_settings()], manager)
+        self.assertEqual(manager.calls[:2],
+                         [("sup.start",), ("ensure", INTEGRATION_HOST, 1081)])
+
+    def test_configured_port_is_not_used_when_engine_falls_back(self):
+        manager = _FakeIntegrationManager()
+        _run_main([_settings(local_port=9090)], manager)
+        self.assertIn(("ensure", INTEGRATION_HOST, 9091), manager.calls)
+        self.assertNotIn(("ensure", INTEGRATION_HOST, 9090), manager.calls)
+
+    def test_shutdown_restores_before_stopping_the_engine(self):
+        manager = _FakeIntegrationManager()
+        _run_main([_settings()], manager)
+        self.assertLess(manager.calls.index(("restore",)),
+                        manager.calls.index(("sup.stop",)))
+
+    def test_failed_start_restores_stale_backup_and_never_ensures(self):
+        manager = _FakeIntegrationManager(backup=True)
+        _run_main([_settings()], manager, start_ok=False)
+        self.assertEqual(manager.calls,
+                         [("sup.start",), ("restore",), ("sup.stop",)])
+
+    def test_no_profiles_restores_stale_backup(self):
+        manager = _FakeIntegrationManager(backup=True)
+        _run_main([_settings()], manager, profiles_enabled=False)
+        self.assertEqual(manager.calls, [("restore",), ("sup.stop",)])
+
+    def test_autostart_off_restores_stale_backup(self):
+        manager = _FakeIntegrationManager(backup=True)
+        _run_main([_settings(autostart=False)], manager)
+        self.assertEqual(manager.calls, [("restore",), ("sup.stop",)])
+
+    def test_idle_service_without_backup_writes_nothing(self):
+        manager = _FakeIntegrationManager(backup=False)
+        _run_main([_settings(autostart=False)], manager)
+        self.assertEqual(manager.writes, [])
+
+    def test_disabling_setting_at_runtime_restores_and_validates(self):
+        manager = _FakeIntegrationManager()
+        _run_main([_settings(), _settings(auto_configure_integration=False)],
+                  manager)
+        self.assertEqual(manager.calls,
+                         [("sup.start",), ("ensure", INTEGRATION_HOST, 1081),
+                          ("restore",), ("validate", INTEGRATION_HOST, 1081),
+                          ("sup.stop",)])
+
+    def test_enabling_setting_at_runtime_ensures(self):
+        manager = _FakeIntegrationManager()
+        _run_main([_settings(auto_configure_integration=False), _settings()],
+                  manager)
+        self.assertEqual(manager.calls,
+                         [("sup.start",), ("ensure", INTEGRATION_HOST, 1081),
+                          ("restore",), ("sup.stop",)])
+
+    def test_port_change_reconfigures_then_ensures_new_port(self):
+        manager = _FakeIntegrationManager()
+        _run_main([_settings(), _settings(local_port=9090)], manager)
+        self.assertEqual(manager.calls,
+                         [("sup.start",), ("ensure", INTEGRATION_HOST, 1081),
+                          ("sup.reconfigure",),
+                          ("ensure", INTEGRATION_HOST, 9091),
+                          ("restore",), ("sup.stop",)])
+
+    def test_failed_reconfigure_restores_instead_of_ensuring(self):
+        manager = _FakeIntegrationManager()
+        _run_main([_settings(), _settings(local_port=9090)], manager,
+                  start_ok=False)
+        self.assertEqual(manager.calls,
+                         [("sup.start",), ("sup.reconfigure",), ("sup.stop",)])
+
+    def test_unrelated_setting_change_does_not_touch_integration(self):
+        manager = _FakeIntegrationManager()
+        _run_main([_settings(), _settings(notify=False)], manager)
+        self.assertEqual(manager.calls,
+                         [("sup.start",), ("ensure", INTEGRATION_HOST, 1081),
+                          ("restore",), ("sup.stop",)])
+
+    def test_start_after_profile_change_ensures_effective_port(self):
+        manager = _FakeIntegrationManager()
+        _run_main([_settings(autostart=False), _settings()], manager,
+                  mtimes=[0, 5])
+        self.assertEqual(manager.calls,
+                         [("sup.reload_profiles",), ("sup.start",),
+                          ("ensure", INTEGRATION_HOST, 1081),
+                          ("restore",), ("sup.stop",)])
+
+    def test_integration_failure_never_stops_the_engine(self):
+        manager = _FakeIntegrationManager(
+            raises=("ensure_configured", "restore_previous"))
+        module, sup = _run_main([_settings()], manager)
+        self.assertIn(("sup.start",), manager.calls)
+        self.assertIn(("sup.stop",), manager.calls)
+        self.assertFalse(sup.bin.is_running())
+        self.assertTrue([m for m, err in module.xbmcgui.notifications if err])
+
+
+class _FakeProcess(object):
+    """subprocess.Popen stand-in: alive until it exits with `returncode`."""
+
+    def __init__(self):
+        self.returncode = None
+
+    def poll(self):
+        return self.returncode
+
+    def exit(self, code=1):
+        self.returncode = code
+
+
+class _FakeBinaryManager(object):
+    """BinaryManager stand-in honouring the real proc/is_running contract."""
+
+    def __init__(self, calls, engine="sing-box", platform="linux_x64"):
+        self.calls = calls
+        self.engine = engine
+        self.platform = platform
+        self.proc = None
+
+    def is_running(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def start(self, config_path):
+        self.calls.append(("start", config_path))
+        self.proc = _FakeProcess()
+        return self.proc
+
+    def stop(self):
+        self.calls.append(("stop",))
+        self.proc = None
+
+    def restart(self, config_path):
+        self.calls.append(("restart", config_path))
+        self.proc = _FakeProcess()
+        return self.proc
+
+    def check(self, config_path):
+        return True, ""
+
+    def crash(self, code=1):
+        self.proc.exit(code)
+
+
+class _FakeClock(object):
+    """`time` module stand-in: the supervisor's only wall-clock boundary."""
+
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def time(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+class TestSupervisorTick(unittest.TestCase):
+    """tick() against a real ProxySupervisor with faked engine and clock."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        settings = {
+            "engine": "sing-box", "mode": "manual", "local_port": 1080,
+            "autostart": True, "urltest_interval": "3m", "urltest_tolerance": 50,
+            "test_url": "https://www.gstatic.com/generate_204",
+            "interrupt_connections": True, "log_level": "info",
+            "binary_platform_override": "auto", "binary_custom_path": "",
+        }
+        self.log = _LogRecorder()
+        self.notify = _NotifyRecorder()
+        self.sup = supervisor.ProxySupervisor(
+            settings=settings, addon_dir=self.tmp, work_dir=self.tmp,
+            logger=self.log, notify=self.notify)
+        self.sup.store.add_uri(VLESS)
+        self.sup.store.add_uri(HY2)
+        self.calls = []
+        self.sup.bin = _FakeBinaryManager(self.calls)
+        self.clock = _FakeClock()
+        saved = supervisor.time
+        supervisor.time = self.clock
+        self.addCleanup(setattr, supervisor, "time", saved)
+
+    def _kinds(self):
+        return [c[0] for c in self.calls]
+
+    def _started(self):
+        self.assertTrue(self.sup.start(), self.sup.last_error)
+        self.calls[:] = []
+        self.notify.messages[:] = []
+
+    # ----- the regression --------------------------------------------
+    def test_healthy_engine_is_not_restarted_when_180s_elapse(self):
+        self._started()
+        self.clock.advance(181)
+        self.sup.tick()
+        self.assertEqual(self.calls, [],
+                         "healthy engine was torn down by the periodic timer")
+
+    def test_healthy_engine_process_survives_an_hour_of_ticks(self):
+        self._started()
+        proc = self.sup.bin.proc
+        for _ in range(20):
+            self.clock.advance(180)
+            self.sup.tick()
+        self.assertEqual(self.calls, [])
+        self.assertIs(self.sup.bin.proc, proc, "engine process was replaced")
+        self.assertTrue(self.sup.bin.is_running())
+
+    # ----- behaviour that must be preserved ---------------------------
+    def test_tick_notifies_once_when_the_engine_comes_up(self):
+        self.sup._resolve_effective_port()
+        self.assertTrue(self.sup.build_and_write_config())
+        self.sup.bin.start(self.sup.config_path)
+        self.notify.messages[:] = []
+        self.sup.tick()
+        self.assertTrue([m for m, err in self.notify.messages if "proxy up" in m],
+                        self.notify.messages)
+        self.notify.messages[:] = []
+        self.clock.advance(300)
+        self.sup.tick()
+        self.assertEqual(self.notify.messages, [])
+
+    def test_tick_notifies_active_profile_change_without_restarting(self):
+        self._started()
+        self.sup.store.set_active("AUTO:Hysteria2")
+        self.clock.advance(300)
+        self.sup.tick()
+        self.assertIn(("Active profile: AUTO:Hysteria2", False),
+                      self.notify.messages)
+        self.assertEqual(self.calls, [])
+
+    def test_crashed_engine_is_restarted_after_backoff(self):
+        self._started()
+        self.sup.bin.crash(2)
+        self.sup.tick()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.sup.consecutive_failures, 1)
+        self.assertTrue([m for m, err in self.notify.messages if err],
+                        self.notify.messages)
+        self.clock.advance(1)
+        self.sup.tick()
+        self.assertEqual(self.calls, [], "restarted before the backoff elapsed")
+        self.clock.advance(1)
+        self.sup.tick()
+        self.assertEqual(self._kinds(), ["start"])
+        self.assertTrue(self.sup.bin.is_running())
+
+    def test_backoff_grows_with_consecutive_failures(self):
+        self._started()
+        delays = []
+        for _ in range(4):
+            self.sup.bin.crash()
+            self.sup.tick()
+            delays.append(self.sup._restart_at - self.clock.now)
+            self.clock.advance(delays[-1])
+            self.sup.tick()
+        self.assertEqual(delays, [2, 4, 8, 16])
+
+    def test_recovered_engine_resets_the_failure_counter(self):
+        self._started()
+        self.sup.bin.crash()
+        self.sup.tick()
+        self.clock.advance(2)
+        self.sup.tick()
+        self.clock.advance(1)
+        self.sup.tick()
+        self.assertEqual(self.sup.consecutive_failures, 0)
+        self.assertIsNone(self.sup._restart_at)
+
+    def test_gives_up_after_too_many_failures(self):
+        self._started()
+        self.sup.bin.stop()
+        self.calls[:] = []
+        self.sup.consecutive_failures = 11
+        self.sup._restart_at = self.clock.now
+        self.sup.tick()
+        self.assertEqual(self.calls, [])
+        self.assertIsNone(self.sup._restart_at)
+
+    def test_idle_supervisor_that_never_started_does_nothing(self):
+        self.clock.advance(3600)
+        self.sup.tick()
+        self.assertEqual(self.calls, [])
+
+    # ----- explicit reconfiguration still restarts --------------------
+    def test_profile_activation_change_rebuilds_config_and_restarts(self):
+        self._started()
+        self.assertTrue(self.sup.store.set_active("AUTO:Hysteria2"))
+        self.sup.restart()
+        self.assertIn("restart", self._kinds())
+        with open(self.sup.config_path) as f:
+            cfg = json.load(f)
+        sel = [o for o in cfg["outbounds"] if o["type"] == "selector"][0]
+        self.assertEqual(sel["default"], "AUTO:Hysteria2")
+        self.assertTrue(self.sup.bin.is_running())
+
+    def test_settings_change_is_applied_by_an_explicit_restart(self):
+        self._started()
+        self.sup.settings["mode"] = "urltest"
+        self.sup.restart()
+        self.assertIn("restart", self._kinds())
+        with open(self.sup.config_path) as f:
+            cfg = json.load(f)
+        self.assertTrue([o for o in cfg["outbounds"] if o["type"] == "urltest"])
+
+    def test_restart_keeps_the_process_when_the_new_config_is_invalid(self):
+        self._started()
+        self.sup.bin.check = lambda cfg: (False, "bad config")
+        self.sup.restart()
+        self.assertEqual(self.calls, [])
+        self.assertTrue(self.sup.bin.is_running())
 
 
 if __name__ == "__main__":
