@@ -142,6 +142,7 @@ def build_config(profiles, settings, active_tag=None):
             "rules": [
                 {"action": "sniff"},
                 {"protocol": "dns", "action": "hijack-dns"},
+                {"ip_is_private": True, "action": "route", "outbound": "direct"},
             ],
             "final": "proxy",
             "auto_detect_interface": True,

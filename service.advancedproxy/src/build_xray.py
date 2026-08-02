@@ -80,7 +80,8 @@ def build_config(profiles, settings, active_tag=None):
         raise RuntimeError("no usable profiles for xray (%d skipped)" % len(skipped))
 
     mode = settings.get("mode", "urltest")
-    rules = []
+    rules = [{"type": "field", "ip": ["geoip:private"],
+              "outboundTag": "direct"}]
     balancer = None
     observatory = None
     if mode == "manual":
