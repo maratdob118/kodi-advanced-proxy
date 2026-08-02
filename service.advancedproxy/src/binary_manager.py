@@ -272,9 +272,9 @@ class BinaryManager(object):
         self.log("Listener on port %s still busy after %ss" % (port, release_timeout), "warn")
         return False
 
-    def restart(self, config_path):
-        self.stop()
-        return self.start(config_path)
+    def restart(self, config_path, port=None, ready_timeout=10.0):
+        self.stop(port=port)
+        return self.start(config_path, port=port, ready_timeout=ready_timeout)
 
     def check(self, config_path):
         """Validate config. Returns (ok, output)."""
