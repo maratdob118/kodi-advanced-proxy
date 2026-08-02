@@ -763,6 +763,8 @@ class TestMeasureLatencies(unittest.TestCase):
 
 
 class _FakeBin(object):
+    """BinaryManager stand-in that records the forwarded effective port."""
+
     def __init__(self, name, calls, engine="sing-box", platform="linux_x64"):
         self.name = name
         self.engine = engine
@@ -773,13 +775,20 @@ class _FakeBin(object):
     def is_running(self):
         return self._running
 
-    def stop(self):
+    def stop(self, port=None):
         self._calls.append(("stop", self.name))
         self._running = False
 
-    def start(self, config_path):
-        self._calls.append(("start", self.name))
+    def start(self, config_path, port=None):
+        self._calls.append(("start", self.name, port))
         self._running = True
+
+    def restart(self, config_path, port=None):
+        self._calls.append(("restart", self.name, port))
+        self._running = True
+
+    def check(self, config_path):
+        return True, ""
 
 
 class TestSupervisorReconfigureEngine(unittest.TestCase):
@@ -793,7 +802,8 @@ class TestSupervisorReconfigureEngine(unittest.TestCase):
         self.calls = []
         self.sup.bin = _FakeBin("old", self.calls)
         self.sup._make_binary_manager = lambda: _FakeBin("new", self.calls)
-        self.sup.start = lambda: self.sup.bin.start(self.sup.config_path)
+        # Config building is covered elsewhere; these pin ordering + port.
+        self.sup.build_and_write_config = lambda: True
 
     def test_stops_old_binary_before_swapping_in_new_one(self):
         self.sup.reconfigure_engine()
@@ -802,9 +812,10 @@ class TestSupervisorReconfigureEngine(unittest.TestCase):
 
     def test_starts_new_binary_after_old_one_was_running(self):
         self.sup.reconfigure_engine()
-        self.assertIn(("start", "new"), self.calls)
+        self.assertIn(("start", "new", self.sup.effective_port), self.calls)
         stop_index = self.calls.index(("stop", "old"))
-        start_index = self.calls.index(("start", "new"))
+        start_index = self.calls.index(
+            ("start", "new", self.sup.effective_port))
         self.assertLess(stop_index, start_index)
 
     def test_does_not_start_if_was_stopped_and_autostart_off(self):
@@ -813,7 +824,20 @@ class TestSupervisorReconfigureEngine(unittest.TestCase):
         self.sup.bin.stop()
         self.calls[:] = []
         self.sup.reconfigure_engine()
-        self.assertNotIn(("start", "new"), self.calls)
+        self.assertNotIn(("start", "new", self.sup.effective_port), self.calls)
+
+    def test_reconfigure_resolves_port_exactly_once_and_forwards_it(self):
+        real_resolve = self.sup._resolve_effective_port
+        resolve_calls = []
+
+        def counting():
+            resolve_calls.append(1)
+            return real_resolve()
+
+        self.sup._resolve_effective_port = counting
+        self.sup.reconfigure_engine()
+        self.assertEqual(resolve_calls, [1])
+        self.assertIn(("start", "new", self.sup.effective_port), self.calls)
 
 
 class TestPortUtils(unittest.TestCase):
@@ -907,6 +931,51 @@ class TestSupervisorPortFallback(unittest.TestCase):
             self.assertTrue(st["running"])
         finally:
             blocker.close()
+
+    def test_start_resolves_port_exactly_once_and_forwards_it(self):
+        real_resolve = self.sup._resolve_effective_port
+        resolve_calls = []
+
+        def counting():
+            resolve_calls.append(1)
+            return real_resolve()
+
+        self.sup._resolve_effective_port = counting
+        self.assertTrue(self.sup.start())
+        self.assertEqual(resolve_calls, [1])
+        self.assertIn(("start", "sing-box", self.sup.effective_port),
+                      self.sup.bin._calls)
+        with open(self.sup.config_path) as f:
+            cfg = json.load(f)
+        self.assertEqual(cfg["inbounds"][0]["listen_port"],
+                         self.sup.effective_port)
+
+    def test_restart_forwards_the_effective_port(self):
+        self.assertTrue(self.sup.start())
+        self.sup.bin._calls[:] = []
+        self.sup.restart()
+        self.assertIn(("restart", "sing-box", self.sup.effective_port),
+                      self.sup.bin._calls)
+
+    def test_tick_never_resolves_port_or_rewrites_config(self):
+        self.assertTrue(self.sup.start())
+        with open(self.sup.config_path) as f:
+            before = f.read()
+        real_resolve = self.sup._resolve_effective_port
+        resolve_calls = []
+
+        def counting():
+            resolve_calls.append(1)
+            return real_resolve()
+
+        self.sup._resolve_effective_port = counting
+        self.sup.bin._calls[:] = []
+        self.sup.tick()
+        self.assertEqual(resolve_calls, [])
+        self.assertEqual(self.sup.bin._calls, [])
+        with open(self.sup.config_path) as f:
+            after = f.read()
+        self.assertEqual(after, before)
 
 
 class TestDefaultPyUsesHelpersLatency(unittest.TestCase):
@@ -1759,17 +1828,17 @@ class _FakeBinaryManager(object):
     def is_running(self):
         return self.proc is not None and self.proc.poll() is None
 
-    def start(self, config_path):
-        self.calls.append(("start", config_path))
+    def start(self, config_path, port=None):
+        self.calls.append(("start", config_path, port))
         self.proc = _FakeProcess()
         return self.proc
 
-    def stop(self):
-        self.calls.append(("stop",))
+    def stop(self, port=None):
+        self.calls.append(("stop", port))
         self.proc = None
 
-    def restart(self, config_path):
-        self.calls.append(("restart", config_path))
+    def restart(self, config_path, port=None):
+        self.calls.append(("restart", config_path, port))
         self.proc = _FakeProcess()
         return self.proc
 
@@ -1915,6 +1984,112 @@ class TestSupervisorTick(unittest.TestCase):
         self.sup.tick()
         self.assertEqual(self.calls, [])
         self.assertIsNone(self.sup._restart_at)
+
+    def test_backoff_is_capped_at_60_seconds(self):
+        self._started()
+        self.sup.consecutive_failures = 6
+        delays = []
+        for _ in range(3):
+            self.sup.bin.crash()
+            self.sup.tick()
+            delays.append(self.sup._restart_at - self.clock.now)
+            self.clock.advance(delays[-1])
+            self.sup.tick()
+        self.assertEqual(delays, [60, 60, 60])
+
+    # ----- shutdown-aware watchdog -----------------------------------
+    def test_clean_exit_after_begin_shutdown_does_not_arm_restart(self):
+        self._started()
+        self.sup.begin_shutdown()
+        self.sup.bin.crash(0)
+        self.sup.tick()
+        self.assertIsNone(self.sup._restart_at)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.sup.consecutive_failures, 0)
+        self.assertEqual([m for m, err in self.notify.messages if err], [])
+
+    def test_begin_shutdown_cancels_a_pending_restart(self):
+        self._started()
+        self.sup.bin.crash(1)
+        self.sup.tick()
+        self.assertIsNotNone(self.sup._restart_at)
+        self.sup.begin_shutdown()
+        self.assertIsNone(self.sup._restart_at)
+
+    def test_begin_shutdown_is_idempotent(self):
+        self._started()
+        self.sup.begin_shutdown()
+        self.sup.begin_shutdown()
+        self.assertTrue(self.sup._shutting_down)
+        self.assertIsNone(self.sup._restart_at)
+
+    def test_stop_during_shutdown_keeps_watchdog_cancelled_and_state_false(self):
+        self._started()
+        self.sup.bin.crash(1)
+        self.sup.tick()
+        self.sup.begin_shutdown()
+        self.assertIsNone(self.sup._restart_at)
+        self.sup.stop()
+        self.assertIsNone(self.sup._restart_at)
+        with open(self.sup.state_path) as f:
+            st = json.load(f)
+        self.assertFalse(st["running"])
+
+    def test_stop_is_idempotent_and_safe_without_a_process(self):
+        self.sup.stop()
+        self.sup.stop()
+        with open(self.sup.state_path) as f:
+            st = json.load(f)
+        self.assertFalse(st["running"])
+
+    def test_stop_persists_state_and_forwards_the_effective_port(self):
+        self._started()
+        self.sup.stop()
+        self.assertIn(("stop", self.sup.effective_port), self.calls)
+        with open(self.sup.state_path) as f:
+            st = json.load(f)
+        self.assertFalse(st["running"])
+
+    # ----- should_stop injection -------------------------------------
+    def test_exit_observed_while_should_stop_is_classified_as_shutdown(self):
+        self._started()
+        self.sup.should_stop = lambda: True
+        self.sup.bin.crash(1)
+        self.sup.tick()
+        self.assertIsNone(self.sup._restart_at)
+        self.assertEqual(self.sup.consecutive_failures, 0)
+        self.assertEqual([m for m, err in self.notify.messages if err], [])
+        self.assertEqual(self.calls, [])
+
+    def test_restart_about_to_fire_is_cancelled_when_should_stop_turns_true(self):
+        self._started()
+        self.sup.bin.crash(1)
+        self.sup.tick()
+        self.assertIsNotNone(self.sup._restart_at)
+        self.sup.should_stop = lambda: True
+        self.clock.advance(3)
+        self.sup.tick()
+        self.assertEqual(self.calls, [])
+        self.assertIsNone(self.sup._restart_at)
+        self.assertFalse(self.sup.bin.is_running())
+
+    # ----- no restart after shutdown ---------------------------------
+    def test_start_after_shutdown_does_not_start_an_engine(self):
+        self._started()
+        self.sup.begin_shutdown()
+        self.calls[:] = []
+        self.assertFalse(self.sup.start())
+        self.assertEqual(self.calls, [])
+
+    def test_restart_after_shutdown_does_not_restart_the_engine(self):
+        self._started()
+        proc = self.sup.bin.proc
+        self.sup.begin_shutdown()
+        self.calls[:] = []
+        self.sup.restart()
+        self.assertEqual(self.calls, [])
+        self.assertIs(self.sup.bin.proc, proc)
+        self.assertTrue(self.sup.bin.is_running())
 
     def test_idle_supervisor_that_never_started_does_nothing(self):
         self.clock.advance(3600)
