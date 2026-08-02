@@ -153,12 +153,14 @@ def main():
         xbmcgui.Dialog().notification(ADDON_NAME, msg, icon, 3000)
 
     work_dir = helpers.profile_dir()
+    monitor = xbmc.Monitor()
     sup = supervisor.ProxySupervisor(
         settings=settings,
         addon_dir=helpers.addon_dir(),
         work_dir=work_dir,
         logger=_xbmc_log,
         notify=_notify,
+        should_stop=monitor.abortRequested,
     )
 
     integration = IntegrationLifecycle(
@@ -167,7 +169,7 @@ def main():
     def _sync_integration(current, running):
         integration.sync(current.get("auto_configure_integration", True),
                          running,
-                         sup.effective_port or current.get("local_port"))
+                         sup.effective_port)
 
     started = False
     if settings.get("autostart") and sup.store.enabled():
@@ -184,7 +186,6 @@ def main():
 
     _sync_integration(settings, started)
 
-    monitor = xbmc.Monitor()
     prev_settings = settings
     prev_profiles_mtime = _profiles_mtime(helpers.profiles_path())
 
@@ -230,9 +231,11 @@ def main():
             _xbmc_log("loop error: %s" % e, "error")
 
         if monitor.waitForAbort(3):
+            sup.begin_shutdown()
             break
 
     _xbmc_log("shutting down proxy")
+    sup.begin_shutdown()
     integration.shutdown()
     sup.stop()
 

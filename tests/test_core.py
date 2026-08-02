@@ -1275,17 +1275,27 @@ INTEGRATION_HOST = "127.0.0.1"
 
 
 class _FakeMonitor(object):
-    """xbmc.Monitor stand-in that aborts after `iterations` loop passes."""
+    """xbmc.Monitor stand-in that aborts after `iterations` loop passes.
 
-    def __init__(self, iterations=1):
+    When `waitForAbort` decides to abort it records ("loop.abort",) into
+    `events`, so the wiring test can prove the in-loop ``begin_shutdown``
+    runs before the loop breaks.
+    """
+
+    def __init__(self, iterations=1, events=None):
         self._left = iterations
+        self.events = events
 
     def abortRequested(self):
         return self._left <= 0
 
     def waitForAbort(self, seconds):
         self._left -= 1
-        return self._left <= 0
+        if self._left <= 0:
+            if self.events is not None:
+                self.events.append(("loop.abort",))
+            return True
+        return False
 
 
 class _FakeXbmcModule(object):
@@ -1413,10 +1423,12 @@ class _FakeSupervisor(object):
 
     `start`/`reconfigure_engine` emulate the busy-port fallback by landing on
     `local_port + 1`, so tests can tell the effective port apart from the
-    configured one.
+    configured one. `reconfigure_ok` (defaulting to `start_ok`) lets a test
+    fail reconfiguration while keeping start healthy.
     """
 
-    def __init__(self, calls, settings, start_ok=True, profiles_enabled=True):
+    def __init__(self, calls, settings, start_ok=True, profiles_enabled=True,
+                 should_stop=None, reconfigure_ok=None):
         self.calls = calls
         self.settings = dict(settings)
         self.store = _FakeStore(profiles_enabled)
@@ -1424,9 +1436,13 @@ class _FakeSupervisor(object):
         self.effective_port = None
         self.last_error = "start failed"
         self.start_ok = start_ok
+        self.reconfigure_ok = reconfigure_ok
+        self.should_stop = should_stop or (lambda: False)
 
-    def _bring_up(self):
-        if not self.start_ok:
+    def _bring_up(self, ok=None):
+        if ok is None:
+            ok = self.start_ok
+        if not ok:
             self.bin.running = False
             return False
         self.effective_port = int(self.settings.get("local_port", 1080)) + 1
@@ -1441,9 +1457,12 @@ class _FakeSupervisor(object):
         self.calls.append(("sup.stop",))
         self.bin.running = False
 
+    def begin_shutdown(self):
+        self.calls.append(("sup.begin_shutdown",))
+
     def reconfigure_engine(self):
         self.calls.append(("sup.reconfigure",))
-        return self._bring_up()
+        return self._bring_up(ok=self.reconfigure_ok)
 
     def reload_profiles(self):
         self.calls.append(("sup.reload_profiles",))
@@ -1486,21 +1505,35 @@ def _settings(**over):
 
 
 def _run_main(settings_seq, manager, start_ok=True, profiles_enabled=True,
-              iterations=1, mtimes=None):
+              iterations=1, mtimes=None, reconfigure_ok=None):
     """Run main() end to end against fakes; returns (module, supervisor)."""
     module = _import_main()
     tmp = tempfile.mkdtemp()
     seq = [dict(s) for s in settings_seq]
     holder = {}
+    wiring = []
+    holder["wiring"] = wiring
 
     def _get_settings(reader=None):
         return dict(seq.pop(0) if len(seq) > 1 else seq[0])
 
+    def _make_monitor():
+        monitor = _FakeMonitor(iterations, events=manager.calls)
+        wiring.append("monitor.created")
+        holder["monitor"] = monitor
+        return monitor
+
     def _make_supervisor(**kwargs):
-        holder["sup"] = _FakeSupervisor(
+        wiring.append("supervisor.created")
+        sup = _FakeSupervisor(
             manager.calls, kwargs["settings"], start_ok=start_ok,
-            profiles_enabled=profiles_enabled)
-        return holder["sup"]
+            profiles_enabled=profiles_enabled,
+            should_stop=kwargs.get("should_stop"),
+            reconfigure_ok=reconfigure_ok)
+        sup.wiring = wiring
+        sup.monitor = holder.get("monitor")
+        holder["sup"] = sup
+        return sup
 
     with contextlib.ExitStack() as stack:
         patch = stack.enter_context
@@ -1513,7 +1546,7 @@ def _run_main(settings_seq, manager, start_ok=True, profiles_enabled=True,
         patch(_patched(module.supervisor, "ProxySupervisor", _make_supervisor))
         patch(_patched(module, "build_integration_manager",
                        lambda logger=None, notify=None: manager))
-        patch(_patched(module.xbmc, "Monitor", lambda: _FakeMonitor(iterations)))
+        patch(_patched(module.xbmc, "Monitor", _make_monitor))
         if mtimes is not None:
             stamps = list(mtimes)
             patch(_patched(module, "_profiles_mtime",
@@ -1727,17 +1760,25 @@ class TestMainLifecycleWiring(unittest.TestCase):
         manager = _FakeIntegrationManager(backup=True)
         _run_main([_settings()], manager, start_ok=False)
         self.assertEqual(manager.calls,
-                         [("sup.start",), ("restore",), ("sup.stop",)])
+                         [("sup.start",), ("restore",), ("loop.abort",),
+                          ("sup.begin_shutdown",), ("sup.begin_shutdown",),
+                          ("sup.stop",)])
 
     def test_no_profiles_restores_stale_backup(self):
         manager = _FakeIntegrationManager(backup=True)
         _run_main([_settings()], manager, profiles_enabled=False)
-        self.assertEqual(manager.calls, [("restore",), ("sup.stop",)])
+        self.assertEqual(manager.calls,
+                         [("restore",), ("loop.abort",),
+                          ("sup.begin_shutdown",), ("sup.begin_shutdown",),
+                          ("sup.stop",)])
 
     def test_autostart_off_restores_stale_backup(self):
         manager = _FakeIntegrationManager(backup=True)
         _run_main([_settings(autostart=False)], manager)
-        self.assertEqual(manager.calls, [("restore",), ("sup.stop",)])
+        self.assertEqual(manager.calls,
+                         [("restore",), ("loop.abort",),
+                          ("sup.begin_shutdown",), ("sup.begin_shutdown",),
+                          ("sup.stop",)])
 
     def test_idle_service_without_backup_writes_nothing(self):
         manager = _FakeIntegrationManager(backup=False)
@@ -1751,7 +1792,8 @@ class TestMainLifecycleWiring(unittest.TestCase):
         self.assertEqual(manager.calls,
                          [("sup.start",), ("ensure", INTEGRATION_HOST, 1081),
                           ("restore",), ("validate", INTEGRATION_HOST, 1081),
-                          ("sup.stop",)])
+                          ("loop.abort",), ("sup.begin_shutdown",),
+                          ("sup.begin_shutdown",), ("sup.stop",)])
 
     def test_enabling_setting_at_runtime_ensures(self):
         manager = _FakeIntegrationManager()
@@ -1759,7 +1801,9 @@ class TestMainLifecycleWiring(unittest.TestCase):
                   manager)
         self.assertEqual(manager.calls,
                          [("sup.start",), ("ensure", INTEGRATION_HOST, 1081),
-                          ("restore",), ("sup.stop",)])
+                          ("loop.abort",), ("sup.begin_shutdown",),
+                          ("sup.begin_shutdown",), ("restore",),
+                          ("sup.stop",)])
 
     def test_port_change_reconfigures_then_ensures_new_port(self):
         manager = _FakeIntegrationManager()
@@ -1768,21 +1812,27 @@ class TestMainLifecycleWiring(unittest.TestCase):
                          [("sup.start",), ("ensure", INTEGRATION_HOST, 1081),
                           ("sup.reconfigure",),
                           ("ensure", INTEGRATION_HOST, 9091),
-                          ("restore",), ("sup.stop",)])
+                          ("loop.abort",), ("sup.begin_shutdown",),
+                          ("sup.begin_shutdown",), ("restore",),
+                          ("sup.stop",)])
 
     def test_failed_reconfigure_restores_instead_of_ensuring(self):
         manager = _FakeIntegrationManager()
         _run_main([_settings(), _settings(local_port=9090)], manager,
                   start_ok=False)
         self.assertEqual(manager.calls,
-                         [("sup.start",), ("sup.reconfigure",), ("sup.stop",)])
+                         [("sup.start",), ("sup.reconfigure",), ("loop.abort",),
+                          ("sup.begin_shutdown",), ("sup.begin_shutdown",),
+                          ("sup.stop",)])
 
     def test_unrelated_setting_change_does_not_touch_integration(self):
         manager = _FakeIntegrationManager()
         _run_main([_settings(), _settings(notify=False)], manager)
         self.assertEqual(manager.calls,
                          [("sup.start",), ("ensure", INTEGRATION_HOST, 1081),
-                          ("restore",), ("sup.stop",)])
+                          ("loop.abort",), ("sup.begin_shutdown",),
+                          ("sup.begin_shutdown",), ("restore",),
+                          ("sup.stop",)])
 
     def test_start_after_profile_change_ensures_effective_port(self):
         manager = _FakeIntegrationManager()
@@ -1791,7 +1841,33 @@ class TestMainLifecycleWiring(unittest.TestCase):
         self.assertEqual(manager.calls,
                          [("sup.reload_profiles",), ("sup.start",),
                           ("ensure", INTEGRATION_HOST, 1081),
-                          ("restore",), ("sup.stop",)])
+                          ("loop.abort",), ("sup.begin_shutdown",),
+                          ("sup.begin_shutdown",), ("restore",),
+                          ("sup.stop",)])
+
+    def test_monitor_created_before_supervisor_and_should_stop_injected(self):
+        manager = _FakeIntegrationManager()
+        _, sup = _run_main([_settings()], manager)
+        self.assertLess(sup.wiring.index("monitor.created"),
+                        sup.wiring.index("supervisor.created"))
+        self.assertIs(sup.should_stop.__self__, sup.monitor)
+
+    def test_aborting_monitor_orders_shutdown_events(self):
+        manager = _FakeIntegrationManager()
+        _run_main([_settings()], manager)
+        self.assertEqual(manager.calls[-5:],
+                         [("loop.abort",), ("sup.begin_shutdown",),
+                          ("sup.begin_shutdown",), ("restore",),
+                          ("sup.stop",)])
+
+    def test_reconfigure_failure_restores_without_new_ensure(self):
+        manager = _FakeIntegrationManager()
+        _run_main([_settings(), _settings(local_port=9090)], manager,
+                  reconfigure_ok=False)
+        self.assertEqual([c for c in manager.calls if c[0] == "ensure"],
+                         [("ensure", INTEGRATION_HOST, 1081)])
+        self.assertLess(manager.calls.index(("restore",)),
+                        manager.calls.index(("sup.stop",)))
 
     def test_integration_failure_never_stops_the_engine(self):
         manager = _FakeIntegrationManager(
