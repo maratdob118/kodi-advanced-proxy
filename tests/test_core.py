@@ -492,6 +492,17 @@ class TestBinaryManager(unittest.TestCase):
             self.assertNotIn("terminate", fake_proc._calls,
                              "no signal is needed once the process already exited")
 
+    def test_restart_forwards_port_to_stop_and_start(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(addon, work)
+            with patch.object(bm, "stop") as stop_mock, \
+                    patch.object(bm, "start") as start_mock:
+                result = bm.restart("/cfg.json", port=1080, ready_timeout=7.5)
+            stop_mock.assert_called_once_with(port=1080)
+            start_mock.assert_called_once_with("/cfg.json", port=1080,
+                                               ready_timeout=7.5)
+            self.assertIs(result, start_mock.return_value)
+
 
 class TestPluginArgs(unittest.TestCase):
     def test_basic_with_query(self):
