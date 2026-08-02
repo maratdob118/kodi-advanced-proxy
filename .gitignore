@@ -6,5 +6,6 @@ dist/
 _template_shadowsocks/
 _vendor/
 *.log
+service.advancedproxy/resources/bin/
 
 .worktrees/
