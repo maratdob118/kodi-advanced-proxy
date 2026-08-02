@@ -6,8 +6,8 @@ Two workflows carry this project's release, and neither can be run locally:
   * `.github/workflows/release.yml` lives here. It tests, builds the eight
     platform ZIPs, assembles and verifies the universal ZIP, publishes the
     source release, then hands the generated metadata to the target repo.
-  * `bootstrap/bigping.repository/.github/workflows/pages.yml` is a template.
-    A human bootstraps it into maratdob118/bigping.repository once, by hand,
+* `bootstrap/bigping.repository/.github/workflows/pages.yml` is a template.
+  A human bootstraps it into maratdob118/kodi-addons once, by hand,
     together with its site builder. It is deliberately NOT part of the tree
     `scripts/publish_repo.py` manages, so the cross-repository token needs
     Contents:write and never the `workflows` permission.
@@ -41,8 +41,8 @@ TARGET_WORKFLOW = os.path.join(TEMPLATE, ".github", "workflows", "pages.yml")
 BUILD_SITE = os.path.join(TEMPLATE, "scripts", "build_site.py")
 
 PAYLOAD = "service.advancedproxy"
-TARGET_REPO = "maratdob118/bigping.repository"
-TOKEN_ENV = "BIGPING_REPOSITORY_TOKEN"
+TARGET_REPO = "maratdob118/kodi-addons"
+TOKEN_ENV = "KODI_ADDONS_TOKEN"
 TOKEN_SECRET = "secrets." + TOKEN_ENV
 MAIN = "refs/heads/main"
 PLATFORMS = ("linux_x64", "linux_x86", "linux_armv7", "linux_arm64",

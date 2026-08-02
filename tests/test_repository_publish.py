@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for publishing the generated tree into maratdob118/bigping.repository.
+"""Tests for publishing the generated tree into maratdob118/kodi-addons.
 
 The publisher takes a tree produced by scripts/generate_repo.py and mirrors it
 into the target repository, whose Pages workflow reacts to the push. It is run
@@ -41,9 +41,11 @@ import publish_repo  # noqa: E402
 
 PAYLOAD = "service.advancedproxy"
 REPOSITORY = "repository.bigping"
-TARGET = "maratdob118/bigping.repository"
-TOKEN_ENV = "BIGPING_REPOSITORY_TOKEN"
+TARGET = "maratdob118/kodi-addons"
+TOKEN_ENV = "KODI_ADDONS_TOKEN"
 TOKEN = "github_pat_11ABCDEF0123456789_supersecretvalue"
+BOT_NAME = "kodi-addons-release-bot"
+BOT_EMAIL = "kodi-addons-release-bot@users.noreply.github.com"
 VERSION = "1.2.3"
 TAG = "v1.2.3"
 BRANCH = "main"
@@ -69,13 +71,14 @@ def generated_files(version=VERSION):
     manifest = {
         "schema": 1,
         "generator": "scripts/generate_repo.py",
-        "datadir": "https://maratdob118.github.io/bigping.repository/",
+        "datadir": "https://maratdob118.github.io/kodi-addons/",
         "index": {"addons_xml": "addons.xml",
                   "addons_xml_md5": "addons.xml.md5", "md5": md5},
         "addons": [
             {"id": REPOSITORY, "version": "1.0.0", "origin": "build"},
             {"id": PAYLOAD, "version": version, "origin": "release-asset",
-             "release": {"repo": "maratdob118/bigping", "tag": "v" + version}},
+             "release": {"repo": "maratdob118/kodi-advanced-proxy",
+                         "tag": "v" + version}},
         ],
     }
     return {
@@ -391,7 +394,7 @@ class TestFreshPublish(PublishTestCase):
     def test_commits_with_the_agreed_message(self):
         commits = self.runner.ran("commit")
         self.assertEqual(len(commits), 1, commits)
-        self.assertIn("chore: publish %s %s" % (PAYLOAD, VERSION), commits[0])
+        self.assertIn("Publish %s %s" % (PAYLOAD, VERSION), commits[0])
 
     def test_tags_the_published_version(self):
         self.assertEqual([c[4:] for c in self.runner.ran("tag")], [[TAG]])
@@ -656,6 +659,55 @@ class TestDryRun(PublishTestCase):
         code, output, runner = self.publish(dry_run=True)
         self.assertEqual(code, 1, output)
         self.assertEqual(runner.calls, [])
+
+
+class TestDryRun(PublishTestCase):
+    def test_runs_no_commands_and_needs_no_token(self):
+        runner = FakeGit()
+        code, output, _ = self.publish(runner, dry_run=True,
+                                       environ={"PATH": "/usr/bin"})
+        self.assertEqual(code, 0, output)
+        self.assertEqual(runner.calls, [])
+
+    def test_prints_the_plan(self):
+        code, output, _ = self.publish(dry_run=True)
+        self.assertEqual(code, 0, output)
+        self.assertIn("dry-run", output)
+        self.assertIn(TAG, output)
+        self.assertIn(TARGET, output)
+
+    def test_still_validates_the_generated_tree(self):
+        os.remove(os.path.join(self.generated, "addons.xml"))
+        code, output, runner = self.publish(dry_run=True)
+        self.assertEqual(code, 1, output)
+        self.assertEqual(runner.calls, [])
+
+
+class TestPublisherContract(PublishTestCase):
+    """The publisher's defaults must equal the approved publication targets."""
+
+    def test_defaults_target_the_agreed_repository_and_token(self):
+        import publish_repo
+        self.assertEqual(publish_repo.DEFAULT_REPOSITORY, TARGET)
+        self.assertEqual(publish_repo.DEFAULT_TOKEN_ENV, TOKEN_ENV)
+        self.assertEqual(publish_repo.DEFAULT_BRANCH, BRANCH)
+        self.assertEqual(publish_repo.BOT_NAME, BOT_NAME)
+        self.assertEqual(publish_repo.BOT_EMAIL, BOT_EMAIL)
+
+    def test_publisher_manages_only_the_five_generated_paths(self):
+        import publish_repo
+        self.assertEqual(publish_repo.MANAGED, MANAGED)
+        for managed in publish_repo.MANAGED:
+            self.assertFalse(managed.startswith(".github/"), managed)
+            self.assertFalse(managed.startswith("scripts/"), managed)
+
+    def test_publisher_never_force_pushes(self):
+        import publish_repo
+        source = read_bytes(os.path.join(SCRIPTS, "publish_repo.py")).decode("utf-8")
+        for forbidden in ("--force", "--force-with-lease"):
+            self.assertNotIn(forbidden, source, forbidden)
+        # Match `-f` only as a standalone flag, not inside "non-fast-forward".
+        self.assertNotRegex(source, r'(?<![-\w])-f(?![-\w])')
 
 
 class TestDefaultsAndCli(PublishTestCase):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the text-only bigping.repository tree.
+"""Generate the text-only kodi-addons tree.
 
 The target repository must stay text-only: the universal payload ZIP is about
 235 MB and GitHub refuses any Git blob over 100 MB.  So this script reads the
@@ -44,8 +44,8 @@ import zlib
 
 PAYLOAD = "service.advancedproxy"
 REPOSITORY = "repository.bigping"
-PAGES = "https://maratdob118.github.io/bigping.repository/"
-SOURCE_REPO = "maratdob118/bigping"
+PAGES = "https://maratdob118.github.io/kodi-addons/"
+SOURCE_REPO = "maratdob118/kodi-advanced-proxy"
 RELEASE_ASSET = "https://github.com/%(repo)s/releases/download/%(tag)s/%(asset)s"
 DIR_MODE = 0o755
 FILE_MODE = 0o644
@@ -253,7 +253,7 @@ def build_readme(payload_version, repository_version):
     return ("""# BigPing Kodi repository
 
 Generated tree. Do not edit by hand: every file here is produced by
-`scripts/generate_repo.py` in [maratdob118/bigping](https://github.com/maratdob118/bigping)
+`scripts/generate_repo.py` in [maratdob118/kodi-advanced-proxy](https://github.com/maratdob118/kodi-advanced-proxy)
 and overwritten on the next run.
 
 This repository stays text-only in Git. Add-on ZIPs are never committed; they
@@ -423,7 +423,7 @@ def main(argv=None):
     here = os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser(
         prog="generate_repo.py",
-        description="Generate the text-only bigping.repository tree.")
+        description="Generate the text-only kodi-addons tree.")
     parser.add_argument("--repo", default=os.path.dirname(here),
                         help="repo root holding the addon sources")
     parser.add_argument("--out", required=True,

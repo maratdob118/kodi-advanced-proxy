@@ -1,8 +1,8 @@
 # Deploys the BigPing Kodi repository to GitHub Pages.
 #
-# This file belongs to maratdob118/bigping.repository. It is bootstrapped there
+# This file belongs to maratdob118/kodi-addons. It is bootstrapped there
 # by hand, once, together with scripts/build_site.py — see bootstrap/README.md
-# in maratdob118/bigping. It is deliberately NOT written by the release
+# in maratdob118/kodi-advanced-proxy. It is deliberately NOT written by the release
 # publisher: keeping `.github/` out of the published tree is what lets the
 # cross-repository token hold Contents:write alone, with no `workflows`
 # permission and no classic PAT.
