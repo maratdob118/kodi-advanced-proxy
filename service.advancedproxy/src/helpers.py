@@ -27,6 +27,7 @@ _DEFAULTS = {
     "log_level": "1",
     "binary_platform_override": "auto",
     "binary_custom_path": "",
+    "auto_configure_integration": "true",
 }
 
 _LOG_LEVELS = {"0": "debug", "1": "info", "2": "warn", "3": "error"}
@@ -73,6 +74,7 @@ def get_settings(reader=None):
         "log_level": _LOG_LEVELS.get(str(s("log_level")), "info"),
         "binary_platform_override": s("binary_platform_override"),
         "binary_custom_path": s("binary_custom_path"),
+        "auto_configure_integration": b("auto_configure_integration"),
     }
 
 
@@ -211,3 +213,97 @@ def build_directory_entries(store, mode, base_url, latencies=None):
     entries.append({"kind": "action", "action": "settings", "str_id": 32203,
                     "url": base_url + "?action=settings"})
     return entries
+
+
+def _execute_jsonrpc(method, params):
+    try:
+        import xbmc
+    except Exception:
+        return None
+    request = {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
+    try:
+        raw = xbmc.executeJSONRPC(json.dumps(request))
+    except Exception:
+        return None
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or "result" not in payload:
+        return None
+    return payload["result"]
+
+
+def read_kodi_proxy_setting(setting_id):
+    result = _execute_jsonrpc("Settings.GetSettingValue",
+                              {"setting": setting_id})
+    if not isinstance(result, dict) or "value" not in result:
+        return None
+    return result["value"]
+
+
+def write_kodi_proxy_setting(setting_id, value):
+    result = _execute_jsonrpc("Settings.SetSettingValue",
+                              {"setting": setting_id, "value": value})
+    return result is True
+
+
+def addon_available(addon_id):
+    try:
+        import xbmcaddon
+    except Exception:
+        return False
+    try:
+        xbmcaddon.Addon(addon_id)
+        return True
+    except Exception:
+        return False
+
+
+def _coerce_addon_value(raw):
+    if raw is None:
+        return None
+    low = str(raw).strip().lower()
+    if low in ("true", "false"):
+        return low == "true"
+    try:
+        return int(low)
+    except (TypeError, ValueError):
+        return raw
+
+
+def read_addon_setting(addon_id, setting_id):
+    try:
+        import xbmcaddon
+        addon = xbmcaddon.Addon(addon_id)
+        if setting_id == "requests.proxy.source":
+            return addon.getSettingInt(setting_id)
+        return _coerce_addon_value(addon.getSetting(setting_id))
+    except Exception:
+        return None
+
+
+def write_addon_setting(addon_id, setting_id, value):
+    try:
+        import xbmcaddon
+        addon = xbmcaddon.Addon(addon_id)
+    except Exception:
+        return False
+    try:
+        if setting_id == "requests.proxy.source":
+            addon.setSettingInt(setting_id, int(value))
+        elif isinstance(value, bool):
+            addon.setSettingBool(setting_id, value)
+        elif isinstance(value, int):
+            addon.setSettingInt(setting_id, value)
+        else:
+            addon.setSetting(setting_id, str(value))
+        return True
+    except Exception:
+        return False
+
+
+def integration_backup_path():
+    return os.path.join(profile_dir(), "integration_backup.json")
