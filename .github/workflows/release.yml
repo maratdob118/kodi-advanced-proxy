@@ -1,0 +1,231 @@
+name: CI and Release
+
+# Path-filtered: this monorepo also carries design docs, and a docs-only push
+# must not rebuild eight platforms or re-run a release.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "service.advancedproxy/**"
+      - "repository.bigping/**"
+      - "bootstrap/**"
+      - "scripts/**"
+      - "tests/**"
+      - "build.sh"
+      - "LICENSE"
+      - "THIRD_PARTY_NOTICES.md"
+      - ".github/workflows/release.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "service.advancedproxy/**"
+      - "repository.bigping/**"
+      - "bootstrap/**"
+      - "scripts/**"
+      - "tests/**"
+      - "build.sh"
+      - "LICENSE"
+      - "THIRD_PARTY_NOTICES.md"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+# Non-cancelling: a new run for the same ref waits instead of killing the
+# in-flight one, so test/build/release for a version can never race a release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run unittest suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Check version consistency
+        run: bash scripts/check_versions.sh "$GITHUB_WORKSPACE"
+
+      - name: Validate addon metadata
+        run: python3 scripts/validate_addon.py "$GITHUB_WORKSPACE"
+
+  build:
+    name: build-${{ matrix.platform }}
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux_x64, linux_x86, linux_armv7, linux_arm64, android_arm64, windows_x64, darwin_x64, darwin_arm64]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve addon version
+        id: version
+        run: echo "addon_version=$(./build.sh --print-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Build ${{ matrix.platform }} ZIP
+        run: ./build.sh "${{ matrix.platform }}"
+
+      - name: Verify ${{ matrix.platform }} ZIP
+        run: |
+          scripts/verify_zip.sh \
+            "dist/service.advancedproxy-${{ steps.version.outputs.addon_version }}.${{ matrix.platform }}.zip" \
+            "${{ matrix.platform }}" \
+            "${{ steps.version.outputs.addon_version }}"
+
+      - name: Upload ${{ matrix.platform }} artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: addon-${{ matrix.platform }}
+          path: dist/service.advancedproxy-${{ steps.version.outputs.addon_version }}.${{ matrix.platform }}.zip
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Only the release job may write to this repository. Artifacts downloaded
+    # from this same run need no extra scope; gh uses GITHUB_TOKEN (no PAT).
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Resolve addon version
+        id: version
+        run: echo "addon_version=$(./build.sh --print-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+          pattern: addon-*
+          merge-multiple: true
+
+      - name: List aggregated artifacts
+        run: ls -la artifacts
+
+      # Kodi resolves exactly one ZIP per addon version and has no OS/arch
+      # negotiation, so the repository's payload must carry every platform.
+      - name: Assemble the universal ZIP
+        env:
+          ADDON_VERSION: ${{ steps.version.outputs.addon_version }}
+        run: |
+          python3 scripts/make_universal.py \
+            --dist artifacts \
+            --version "$ADDON_VERSION" \
+            --output "artifacts/service.advancedproxy-$ADDON_VERSION.zip"
+
+      - name: Verify the universal ZIP
+        env:
+          ADDON_VERSION: ${{ steps.version.outputs.addon_version }}
+        run: |
+          scripts/verify_zip.sh --universal \
+            "artifacts/service.advancedproxy-$ADDON_VERSION.zip" \
+            "$ADDON_VERSION"
+
+      # Nine ZIPs now sit in artifacts/: eight platform builds for manual
+      # installs plus the universal payload. release.py adds SHA256SUMS.
+      - name: Create GitHub release
+        env:
+          ADDON_VERSION: ${{ steps.version.outputs.addon_version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/release.py \
+            --version "$ADDON_VERSION" \
+            --assets-dir artifacts \
+            --sha "$GITHUB_SHA"
+
+      # Handed to the publish job so the manifest's digest is measured on the
+      # very bytes that were just released. Never committed to Git.
+      - name: Upload the universal ZIP for the publish job
+        uses: actions/upload-artifact@v5
+        with:
+          name: universal-zip
+          path: artifacts/service.advancedproxy-${{ steps.version.outputs.addon_version }}.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: publish
+    needs: release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # This job writes nothing here: it pushes generated text to
+    # maratdob118/bigping.repository with a fine-grained token scoped to that
+    # repository alone. This repo's GITHUB_TOKEN could not do it, and the PAT
+    # deliberately cannot write here.
+    permissions:
+      contents: read
+    # Ref-independent: the target repository is a single shared resource, so
+    # two refs publishing at once would race regardless of which ref they are.
+    concurrency:
+      group: publish-bigping-repository
+      cancel-in-progress: false
+    env:
+      BIGPING_REPOSITORY_TOKEN: ${{ secrets.BIGPING_REPOSITORY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # An expired or unset fine-grained token must fail loudly here rather
+      # than surface as a confusing git authentication error later.
+      - name: Require the target repository token
+        run: |
+          if [ -z "${BIGPING_REPOSITORY_TOKEN:-}" ]; then
+            echo "BIGPING_REPOSITORY_TOKEN is unset or empty; publishing to" \
+                 "maratdob118/bigping.repository needs a fine-grained token" \
+                 "with Contents:write on that repository." >&2
+            exit 1
+          fi
+          echo "BIGPING_REPOSITORY_TOKEN is present (its value is never printed)"
+
+      - name: Resolve addon version
+        id: version
+        run: echo "addon_version=$(./build.sh --print-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Download the universal ZIP
+        uses: actions/download-artifact@v5
+        with:
+          name: universal-zip
+          path: artifacts
+
+      - name: Generate the target repository tree
+        env:
+          ADDON_VERSION: ${{ steps.version.outputs.addon_version }}
+        run: |
+          python3 scripts/generate_repo.py \
+            --repo . \
+            --out generated \
+            --universal "artifacts/service.advancedproxy-$ADDON_VERSION.zip" \
+            --version "$ADDON_VERSION"
+
+      - name: Publish the tree to maratdob118/bigping.repository
+        env:
+          ADDON_VERSION: ${{ steps.version.outputs.addon_version }}
+        run: |
+          python3 scripts/publish_repo.py \
+            --generated-dir generated \
+            --version "$ADDON_VERSION"
