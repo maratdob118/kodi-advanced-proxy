@@ -31,8 +31,8 @@ Source and distribution live in two separate GitHub repositories.
 
 | Repository | Role | Contents |
 | --- | --- | --- |
-| `maratdob118/bigping` | Source monorepo (this repo) | Addon source, build/test tooling, CI. Publishes a GitHub Release per addon version. |
-| `maratdob118/bigping.repository` | Generated Kodi repository | Text-only in Git (`addons.xml`, `addons.xml.md5`, repository addon metadata). Binary payload is served from GitHub Pages. |
+| `maratdob118/kodi-advanced-proxy` | Source monorepo (this repo) | Addon source, build/test tooling, CI. Publishes a GitHub Release per addon version. |
+| `maratdob118/kodi-addons` | Generated Kodi repository | Text-only in Git (`addons.xml`, `addons.xml.md5`, repository addon metadata). Binary payload is served from GitHub Pages. |
 
 The Kodi repository addon is a second, separate addon: **`repository.bigping`**.
 Installing it once lets Kodi discover and auto-update Advanced Proxy.
@@ -65,12 +65,12 @@ repository install path.
 
 The universal ZIP is roughly 235 MB. GitHub rejects any single file over
 **100 MB** pushed into a Git repository, so the universal ZIP can never be a Git
-blob in `bigping.repository` (and `raw.githubusercontent.com` only serves Git
+blob in `kodi-addons` (and `raw.githubusercontent.com` only serves Git
 blobs, so it is not an option either).
 
 Instead:
 
-- `bigping.repository` stays **text-only in Git** — nothing large is ever
+- `kodi-addons` stays **text-only in Git** — nothing large is ever
   committed.
 - The binary payload is published as a **GitHub Pages deployment artifact**,
   which is not a Git commit and is not subject to the blob limit.
@@ -89,7 +89,7 @@ Instead:
 Planned repository layout as served by Pages:
 
 ```
-https://maratdob118.github.io/bigping.repository/
+https://maratdob118.github.io/kodi-addons/
 ├── addons.xml                 # all addons + versions offered by this repo
 ├── addons.xml.md5             # md5 of addons.xml; Kodi polls this for changes
 ├── repository.bigping/
@@ -108,24 +108,25 @@ than placed directly under the extension point:
 ```xml
 <extension point="xbmc.addon.repository" name="BigPing">
   <dir minversion="20.0.0">
-    <info compressed="false">https://maratdob118.github.io/bigping.repository/addons.xml</info>
-    <checksum verify="md5">https://maratdob118.github.io/bigping.repository/addons.xml.md5</checksum>
-    <datadir zip="true">https://maratdob118.github.io/bigping.repository/</datadir>
+    <info compressed="false">https://maratdob118.github.io/kodi-addons/addons.xml</info>
+    <checksum verify="md5">https://maratdob118.github.io/kodi-addons/addons.xml.md5</checksum>
+    <datadir zip="true">https://maratdob118.github.io/kodi-addons/</datadir>
   </dir>
 </extension>
 ```
 
 ### Publishing flow
 
-1. **Source release flow** (`maratdob118/bigping`): on a push to `main`, CI runs
+1. **Source release flow** (`maratdob118/kodi-advanced-proxy`): on a push to
+   `main`, CI runs
    tests, builds the eight per-platform ZIPs plus the universal ZIP, and — if
    the version in `addon.xml` has no release yet — publishes GitHub Release
    `vX.Y.Z` with all ZIPs and checksums. Uses the repository-scoped
    `GITHUB_TOKEN`.
-2. **Target Pages flow** (`maratdob118/bigping.repository`): the source repo
+2. **Target Pages flow** (`maratdob118/kodi-addons`): the source repo
    commits regenerated `addons.xml` / `addons.xml.md5` / `manifest.json` /
    repository metadata to the target repo using a **fine-grained** PAT stored as
-   `BIGPING_REPOSITORY_TOKEN`, scoped to that one repository with the single
+   `KODI_ADDONS_TOKEN`, scoped to that one repository with the single
    permission **Contents: write**. That commit triggers the target repo's own
    Pages workflow, which downloads the universal ZIP from the source Release,
    checks its bytes against the SHA256 the manifest measured at build time, and

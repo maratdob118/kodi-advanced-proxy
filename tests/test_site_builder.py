@@ -2,7 +2,7 @@
 """Tests for the target repository's Pages site builder.
 
 `bootstrap/bigping.repository/scripts/build_site.py` is bootstrapped by hand
-into maratdob118/bigping.repository. There it turns the text tree the publisher
+into maratdob118/kodi-addons. There it turns the text tree the publisher
 pushed plus one downloaded universal ZIP into the site GitHub Pages serves:
 
     addons.xml, addons.xml.md5
@@ -431,7 +431,7 @@ class TestPlan(SiteBuilderTest):
 
     def test_refuses_raw_githubusercontent(self):
         """It serves Git blobs; the payload is far too large to be one."""
-        raw = ("https://raw.githubusercontent.com/maratdob118/bigping/main/%s-%s.zip"
+        raw = ("https://raw.githubusercontent.com/maratdob118/kodi-advanced-proxy/main/%s-%s.zip"
                % (PAYLOAD, VERSION))
         self.fixture.mutate(lambda document: self.fixture
                             .entry(document, PAYLOAD).__setitem__("url", raw))

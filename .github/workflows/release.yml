@@ -171,7 +171,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # This job writes nothing here: it pushes generated text to
-    # maratdob118/bigping.repository with a fine-grained token scoped to that
+    # maratdob118/kodi-addons with a fine-grained token scoped to that
     # repository alone. This repo's GITHUB_TOKEN could not do it, and the PAT
     # deliberately cannot write here.
     permissions:
@@ -179,10 +179,10 @@ jobs:
     # Ref-independent: the target repository is a single shared resource, so
     # two refs publishing at once would race regardless of which ref they are.
     concurrency:
-      group: publish-bigping-repository
+      group: publish-kodi-addons
       cancel-in-progress: false
     env:
-      BIGPING_REPOSITORY_TOKEN: ${{ secrets.BIGPING_REPOSITORY_TOKEN }}
+      KODI_ADDONS_TOKEN: ${{ secrets.KODI_ADDONS_TOKEN }}
     steps:
       - uses: actions/checkout@v5
 
@@ -194,13 +194,13 @@ jobs:
       # than surface as a confusing git authentication error later.
       - name: Require the target repository token
         run: |
-          if [ -z "${BIGPING_REPOSITORY_TOKEN:-}" ]; then
-            echo "BIGPING_REPOSITORY_TOKEN is unset or empty; publishing to" \
-                 "maratdob118/bigping.repository needs a fine-grained token" \
+          if [ -z "${KODI_ADDONS_TOKEN:-}" ]; then
+            echo "KODI_ADDONS_TOKEN is unset or empty; publishing to" \
+                 "maratdob118/kodi-addons needs a fine-grained token" \
                  "with Contents:write on that repository." >&2
             exit 1
           fi
-          echo "BIGPING_REPOSITORY_TOKEN is present (its value is never printed)"
+          echo "KODI_ADDONS_TOKEN is present (its value is never printed)"
 
       - name: Resolve addon version
         id: version
@@ -222,7 +222,7 @@ jobs:
             --universal "artifacts/service.advancedproxy-$ADDON_VERSION.zip" \
             --version "$ADDON_VERSION"
 
-      - name: Publish the tree to maratdob118/bigping.repository
+      - name: Publish the tree to maratdob118/kodi-addons
         env:
           ADDON_VERSION: ${{ steps.version.outputs.addon_version }}
         run: |

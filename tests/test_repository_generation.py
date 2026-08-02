@@ -1,4 +1,4 @@
-"""Tests for the text-only bigping.repository tree generator.
+"""Tests for the text-only Kodi repository tree generator.
 
 The generator turns two source manifests plus one universal ZIP into the
 text tree the target repository commits and GitHub Pages serves:
@@ -26,8 +26,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, ".."))
 PAYLOAD = "service.advancedproxy"
 REPOSITORY = "repository.bigping"
-SOURCE_REPO = "maratdob118/bigping"
-PAGES = "https://maratdob118.github.io/bigping.repository/"
+SOURCE_REPO = "maratdob118/kodi-advanced-proxy"
+PAGES = "https://maratdob118.github.io/kodi-addons/"
 RELEASES = "https://github.com/%s/releases/download/" % SOURCE_REPO
 XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
 GENERATED = ("addons.xml", "addons.xml.md5", "manifest.json", "README.md",
@@ -237,6 +237,13 @@ class TestRepositoryAddonManifest(RepositoryTestCase):
         self.assertEqual((metadata.find("license").text or "").strip(),
                          "GPL-3.0-or-later")
 
+    def test_metadata_source_points_at_the_new_source_repository(self):
+        metadata = self.extension("xbmc.addon.metadata")
+        source = (metadata.find("source").text or "").strip()
+        self.assertEqual(source,
+                         "https://github.com/maratdob118/kodi-advanced-proxy")
+        self.assertTrue(source.startswith("https://"), source)
+
     def test_repository_addon_declares_no_binary_assets(self):
         """No invented artwork: the addon ships metadata only."""
         assets = self.extension("xbmc.addon.metadata").find("assets")
@@ -329,6 +336,28 @@ class TestPermissions(RepositoryTestCase):
         result = self.fixture.generate(umask=0o077)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTreeModes()
+
+
+class TestGeneratorContract(RepositoryTestCase):
+    """The generator's constants must equal the approved publication targets."""
+
+    def generator_text(self):
+        return read_text(os.path.join(REPO, "scripts", "generate_repo.py"))
+
+    def test_generator_pins_the_approved_pages_base_url(self):
+        self.assertIn('PAGES = "%s"' % PAGES, self.generator_text())
+
+    def test_generator_pins_the_approved_source_repository(self):
+        self.assertIn('SOURCE_REPO = "%s"' % SOURCE_REPO,
+                      self.generator_text())
+
+    def test_generated_release_asset_urls_point_at_the_new_source_repo(self):
+        self.generate_ok()
+        url = self.fixture.manifest()["addons"][
+            [entry["id"] for entry in self.fixture.manifest()["addons"]]
+            .index(PAYLOAD)]["url"]
+        self.assertTrue(url.startswith(
+            "https://github.com/maratdob118/kodi-advanced-proxy/"), url)
 
 
 class TestAddonsXml(RepositoryTestCase):

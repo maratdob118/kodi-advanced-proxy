@@ -2,7 +2,7 @@
 """Publish the generated tree into the target repository.
 
 `scripts/generate_repo.py` builds a small text-only tree; this script mirrors
-that tree into maratdob118/bigping.repository, where a Pages workflow reacts to
+that tree into maratdob118/kodi-addons, where a Pages workflow reacts to
 the push and deploys the actual add-on ZIPs. Only the generated files are
 managed here: the target's .git, its Pages configuration and anything else it
 carries are left untouched.
@@ -49,8 +49,8 @@ import time
 
 PAYLOAD = "service.advancedproxy"
 REPOSITORY = "repository.bigping"
-DEFAULT_REPOSITORY = "maratdob118/bigping.repository"
-DEFAULT_TOKEN_ENV = "BIGPING_REPOSITORY_TOKEN"
+DEFAULT_REPOSITORY = "maratdob118/kodi-addons"
+DEFAULT_TOKEN_ENV = "KODI_ADDONS_TOKEN"
 DEFAULT_BRANCH = "main"
 MANAGED = ("addons.xml", "addons.xml.md5", "manifest.json", "README.md",
            REPOSITORY + "/addon.xml")
@@ -59,11 +59,11 @@ ADDONS_XML = "addons.xml"
 SCHEMA = 1
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 MAX_FILE = 1 << 20
-BOT_NAME = "bigping-release-bot"
-BOT_EMAIL = "bigping-release-bot@users.noreply.github.com"
+BOT_NAME = "kodi-addons-release-bot"
+BOT_EMAIL = "kodi-addons-release-bot@users.noreply.github.com"
 CREDENTIAL_KEY = "credential.https://github.com.helper"
 CREDENTIAL_HELPER = "!gh auth git-credential"
-COMMIT_MESSAGE = "chore: publish %s %s"
+COMMIT_MESSAGE = "Publish %s %s"
 PUSH_ATTEMPTS = 3
 BACKOFF = 2.0
 REDACTED = "***"

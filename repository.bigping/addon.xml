@@ -5,9 +5,9 @@
     </requires>
     <extension point="xbmc.addon.repository" name="BigPing">
         <dir minversion="20.0.0">
-            <info compressed="false">https://maratdob118.github.io/bigping.repository/addons.xml</info>
-            <checksum verify="md5">https://maratdob118.github.io/bigping.repository/addons.xml.md5</checksum>
-            <datadir zip="true">https://maratdob118.github.io/bigping.repository/</datadir>
+            <info compressed="false">https://maratdob118.github.io/kodi-addons/addons.xml</info>
+            <checksum verify="md5">https://maratdob118.github.io/kodi-addons/addons.xml.md5</checksum>
+            <datadir zip="true">https://maratdob118.github.io/kodi-addons/</datadir>
             <hashes>sha256</hashes>
         </dir>
     </extension>
@@ -18,8 +18,8 @@
         <platform>all</platform>
         <license>GPL-3.0-or-later</license>
         <forum></forum>
-        <website>https://maratdob118.github.io/bigping.repository/</website>
-        <source>https://github.com/maratdob118/bigping</source>
+        <website>https://maratdob118.github.io/kodi-addons/</website>
+        <source>https://github.com/maratdob118/kodi-advanced-proxy</source>
         <news>
 1.0.0
 - First BigPing repository release, offering Advanced Proxy

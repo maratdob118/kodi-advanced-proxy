@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Build the GitHub Pages site this repository serves to Kodi.
 
-This script lives in maratdob118/bigping.repository. It is bootstrapped there
+This script lives in maratdob118/kodi-addons. It is bootstrapped there
 by hand, together with the workflow that runs it, and is NOT part of the tree
-maratdob118/bigping pushes: the release token that writes this repository holds
+maratdob118/kodi-advanced-proxy pushes: the release token that writes this
+repository holds
 Contents:write only and can never touch `.github/`.
 
 The Git tree here is text. The add-on payload is not: the universal Advanced
@@ -58,7 +59,7 @@ import zipfile
 import zlib
 
 PAYLOAD = "service.advancedproxy"
-SOURCE_REPO = "maratdob118/bigping"
+SOURCE_REPO = "maratdob118/kodi-advanced-proxy"
 RELEASE_ASSET = "https://github.com/%(repo)s/releases/download/%(tag)s/%(asset)s"
 SCHEMA = 1
 ADDONS_XML = "addons.xml"
