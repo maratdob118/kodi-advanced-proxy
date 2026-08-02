@@ -114,7 +114,7 @@ def build_config(profiles, settings, active_tag=None):
             "interval": settings.get("urltest_interval", "3m"),
             "tolerance": int(settings.get("urltest_tolerance", 50)),
             "idle_timeout": "5m",
-            "interrupt_exist_connections": bool(settings.get("interrupt_connections", True)),
+            "interrupt_exist_connections": False,
         }
 
     inbounds = [{
