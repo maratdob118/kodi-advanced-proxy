@@ -86,6 +86,19 @@ def _write_executable(path):
     os.chmod(path, 0o755)
     return path
 
+
+def _popen_returning(fake_proc):
+    """Patch side_effect for subprocess.Popen returning fake_proc on the engine
+    launch while passing the custom-binary `version` probe through to the real
+    Popen (ensure_binary validates custom paths by running them)."""
+    real_popen = subprocess.Popen
+
+    def _popen(args, **kwargs):
+        if args[-1] == "version":
+            return real_popen(args, **kwargs)
+        return fake_proc
+    return _popen
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "..", "service.advancedproxy", "src")
 ADDON_DIR = os.path.abspath(os.path.join(HERE, "..", "service.advancedproxy"))
@@ -416,6 +429,68 @@ class TestBinaryManager(unittest.TestCase):
             self.assertTrue(any(lvl == "warn" and "1080" in m
                                 for lvl, m in log_recorder.entries),
                             log_recorder.entries)
+
+    def test_start_waits_for_listener_before_returning(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(
+                addon, work, custom_path=_write_executable(os.path.join(addon, "sing-box")))
+            fake_proc = _FakeProcessForStop()
+            clock = _FakeBinaryClock()
+            with patch.object(binary_manager.subprocess, "Popen",
+                              side_effect=_popen_returning(fake_proc)), \
+                    patch.object(port_utils, "port_in_use",
+                                 side_effect=[False, False, True]), \
+                    patch.object(binary_manager, "time", clock):
+                proc = bm.start(os.path.join(work, "engine.json"), port=1080,
+                                ready_timeout=1.0)
+            self.assertIs(proc, fake_proc)
+            self.assertEqual(clock.sleeps, [0.1, 0.1],
+                             "readiness must poll in 100 ms steps until the listener is up")
+            self.assertIsNone(fake_proc.poll(),
+                              "the process must stay alive after start returns")
+
+    def test_start_readiness_timeout_stops_spawned_process_and_raises(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            log_recorder = _LogRecorder()
+            bm = binary_manager.BinaryManager(
+                addon, work, custom_path=_write_executable(os.path.join(addon, "sing-box")),
+                logger=log_recorder)
+            fake_proc = _FakeProcessForStop()
+            clock = _FakeBinaryClock()
+            with patch.object(binary_manager.subprocess, "Popen",
+                              side_effect=_popen_returning(fake_proc)), \
+                    patch.object(port_utils, "port_in_use",
+                                 side_effect=lambda *a, **k: False), \
+                    patch.object(binary_manager, "time", clock):
+                with self.assertRaises(RuntimeError):
+                    bm.start(os.path.join(work, "engine.json"), port=1080,
+                             ready_timeout=0.3)
+            self.assertIsNone(bm.proc,
+                              "no live process handle may survive a failed start")
+            self.assertIn("terminate", fake_proc._calls,
+                          "the spawned process must be stopped through the hardened path")
+            self.assertTrue(any("stopping" in m.lower() for lvl, m in log_recorder.entries),
+                            log_recorder.entries)
+
+    def test_start_fails_when_process_exits_during_readiness(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(
+                addon, work, custom_path=_write_executable(os.path.join(addon, "sing-box")))
+            fake_proc = _FakeProcessForStop()
+            fake_proc._exit_code = 1
+            clock = _FakeBinaryClock()
+            with patch.object(binary_manager.subprocess, "Popen",
+                              side_effect=_popen_returning(fake_proc)), \
+                    patch.object(port_utils, "port_in_use",
+                                 side_effect=lambda *a, **k: False), \
+                    patch.object(binary_manager, "time", clock):
+                with self.assertRaises(RuntimeError):
+                    bm.start(os.path.join(work, "engine.json"), port=1080,
+                             ready_timeout=0.3)
+            self.assertIsNone(bm.proc,
+                              "a dead process must not survive as a ready handle")
+            self.assertNotIn("terminate", fake_proc._calls,
+                             "no signal is needed once the process already exited")
 
 
 class TestPluginArgs(unittest.TestCase):

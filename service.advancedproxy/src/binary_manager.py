@@ -179,7 +179,7 @@ class BinaryManager(object):
     def is_running(self):
         return self.proc is not None and self.proc.poll() is None
 
-    def start(self, config_path):
+    def start(self, config_path, port=None, ready_timeout=10.0):
         if self.is_running():
             self.log("%s already running (pid %s)" % (self.engine, self.proc.pid))
             return self.proc
@@ -201,7 +201,29 @@ class BinaryManager(object):
 
         self.proc = subprocess.Popen(args, **kwargs)
         self.log("%s started, pid %s" % (self.engine, self.proc.pid))
+        if port is not None and not self._wait_for_readiness(port, ready_timeout):
+            self.log("%s not ready on port %s within %ss; stopping spawned process"
+                     % (self.engine, port, ready_timeout), "warn")
+            self.stop(port=port)
+            raise RuntimeError("%s failed to listen on port %s within %ss"
+                               % (self.engine, port, ready_timeout))
         return self.proc
+
+    def _wait_for_readiness(self, port, ready_timeout):
+        """Poll the listener on `port` while the process stays alive.
+
+        Returns True once the listener is up and the process is alive, False
+        on timeout or when the process exits first.
+        """
+        deadline = time.time() + ready_timeout
+        while True:
+            if self.proc is None or self.proc.poll() is not None:
+                return False
+            if port_utils.port_in_use(port):
+                return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.1)
 
     def stop(self, port=None, term_timeout=5.0, kill_timeout=5.0, release_timeout=5.0):
         if self.proc is None:
