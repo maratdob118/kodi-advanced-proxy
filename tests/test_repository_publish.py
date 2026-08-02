@@ -661,28 +661,6 @@ class TestDryRun(PublishTestCase):
         self.assertEqual(runner.calls, [])
 
 
-class TestDryRun(PublishTestCase):
-    def test_runs_no_commands_and_needs_no_token(self):
-        runner = FakeGit()
-        code, output, _ = self.publish(runner, dry_run=True,
-                                       environ={"PATH": "/usr/bin"})
-        self.assertEqual(code, 0, output)
-        self.assertEqual(runner.calls, [])
-
-    def test_prints_the_plan(self):
-        code, output, _ = self.publish(dry_run=True)
-        self.assertEqual(code, 0, output)
-        self.assertIn("dry-run", output)
-        self.assertIn(TAG, output)
-        self.assertIn(TARGET, output)
-
-    def test_still_validates_the_generated_tree(self):
-        os.remove(os.path.join(self.generated, "addons.xml"))
-        code, output, runner = self.publish(dry_run=True)
-        self.assertEqual(code, 1, output)
-        self.assertEqual(runner.calls, [])
-
-
 class TestPublisherContract(PublishTestCase):
     """The publisher's defaults must equal the approved publication targets."""
 
