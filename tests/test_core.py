@@ -238,6 +238,32 @@ class TestBuildSingbox(unittest.TestCase):
                 if o["type"] not in ("urltest", "direct")]
         self.assertNotIn("UAE:xHTTP", tags)
 
+    def test_urltest_interrupt_connections_true(self):
+        profs, _ = parsers.parse_lines([VLESS, HY2])
+        cfg, _ = build_singbox.build_config(profs, self._settings(mode="urltest", interrupt_connections=True))
+        ut = [o for o in cfg["outbounds"] if o["type"] == "urltest"][0]
+        self.assertEqual(ut["interrupt_exist_connections"], False)
+
+    def test_urltest_interrupt_connections_false(self):
+        profs, _ = parsers.parse_lines([VLESS, HY2])
+        cfg, _ = build_singbox.build_config(profs, self._settings(mode="urltest", interrupt_connections=False))
+        ut = [o for o in cfg["outbounds"] if o["type"] == "urltest"][0]
+        self.assertEqual(ut["interrupt_exist_connections"], False)
+
+    def test_manual_interrupt_connections_true(self):
+        profs, _ = parsers.parse_lines([VLESS, HY2])
+        cfg, _ = build_singbox.build_config(profs, self._settings(mode="manual", interrupt_connections=True),
+                                            active_tag="AUTO:Hysteria2")
+        sel = [o for o in cfg["outbounds"] if o["type"] == "selector"][0]
+        self.assertEqual(sel["interrupt_exist_connections"], True)
+
+    def test_manual_interrupt_connections_false(self):
+        profs, _ = parsers.parse_lines([VLESS, HY2])
+        cfg, _ = build_singbox.build_config(profs, self._settings(mode="manual", interrupt_connections=False),
+                                            active_tag="AUTO:Hysteria2")
+        sel = [o for o in cfg["outbounds"] if o["type"] == "selector"][0]
+        self.assertEqual(sel["interrupt_exist_connections"], False)
+
 
 class TestBuildXray(unittest.TestCase):
     def _settings(self, **kw):
