@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="service.advancedproxy" name="Advanced Proxy" version="0.2.2" provider-name="advancedproxy">
+<addon id="service.advancedproxy" name="Advanced Proxy" version="0.3.0" provider-name="advancedproxy">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
@@ -13,11 +13,31 @@
         <description lang="en_GB">Runs a bundled sing-box or Xray binary as a local proxy on 127.0.0.1. Profiles are added as vless://, hy2:// or trojan:// links and can be switched manually from the addon menu or automatically by latency test. Point Kodi's network proxy at the local port.</description>
         <language></language>
         <platform>all</platform>
-        <license>MIT</license>
+        <license>GPL-3.0-or-later</license>
         <forum></forum>
         <website></website>
         <source></source>
-        <news>Initial release</news>
+        <news>
+0.3.0
+- Kodi's network proxy is now pointed at the port the local proxy actually listens on, including when a fallback port is used
+- plugin.video.youtube is switched to "use Kodi's proxy" when it is installed; a missing or disabled YouTube addon is skipped without errors
+- Previous Kodi and YouTube proxy settings are backed up before any change and restored when the proxy stops, when auto-configuration is turned off, or when no engine starts; values changed by hand are left alone
+- New setting "Auto-configure Kodi proxy" (on by default) controls the whole integration
+- Releases now ship eight per-platform ZIPs plus one universal ZIP containing every platform's engines, all with the sing-box and Xray license texts and third-party notices
+- Advanced Proxy can be installed and updated from inside Kodi through the new BigPing repository over HTTPS
+
+0.3.0 (RU)
+- Сетевой прокси Kodi теперь указывает на порт, который локальный прокси действительно слушает, в том числе при переходе на запасной порт
+- plugin.video.youtube переключается на использование прокси Kodi, если он установлен; отсутствующее или отключённое дополнение YouTube пропускается без ошибок
+- Прежние настройки прокси Kodi и YouTube сохраняются до внесения изменений и восстанавливаются при остановке прокси, при отключении авто-настройки или если движок не запустился; изменённые вручную значения не трогаются
+- Новая настройка «Auto-configure Kodi proxy» (включена по умолчанию) управляет всей интеграцией
+- В релизы входят восемь ZIP-архивов под конкретные платформы и один универсальный ZIP со всеми движками, во всех есть тексты лицензий sing-box и Xray и уведомления о сторонних компонентах
+- Advanced Proxy можно установить и обновлять прямо из Kodi через новый репозиторий BigPing по HTTPS
+
+0.2.2
+- Relicensed under GPL-3.0-or-later
+- Bundled sing-box v1.13.14 and Xray-core v25.8.3 license texts and third-party notices
+</news>
         <assets>
             <icon>resources/icon.png</icon>
             <fanart>resources/fanart.jpg</fanart>
