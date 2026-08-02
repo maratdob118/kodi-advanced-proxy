@@ -36,16 +36,27 @@ class _FakeProcessForStop(object):
         self._terminated = False
         self._killed = False
         self._exit_code = None
+        self._exit_before_terminate = False
         self._calls = []
         self.pid = 12345
+        self.returncode = None
         self._wait_calls = 0
     
     def terminate(self):
         self._calls.append("terminate")
+        if self._exit_before_terminate:
+            # The process is already gone: simulate the race window where it
+            # exits between is_running() and terminate().
+            self._exit_code = 0
+            self.returncode = 0
+            raise ProcessLookupError(3, "No such process")
         self._terminated = True
     
     def kill(self):
         self._calls.append("kill")
+        if self._exit_before_terminate:
+            # The process is gone: the same race makes kill() fail too.
+            raise ProcessLookupError(3, "No such process")
         self._killed = True
     
     def poll(self):
@@ -54,6 +65,8 @@ class _FakeProcessForStop(object):
             return None
         if self._terminated and self._exit_code is None:
             self._exit_code = 0
+        if self._exit_code is not None and self.returncode is None:
+            self.returncode = self._exit_code
         return self._exit_code
     
     def wait(self, timeout=None):
@@ -385,7 +398,9 @@ class TestBinaryManager(unittest.TestCase):
                              "SIGTERM must be sent before SIGKILL")
             self.assertIsNotNone(bm.proc, "Process handle should be retained until exit is confirmed")
 
-            # Simulate process exit after delay
+            # Both term and kill waits timed out above (SIGKILL escalation), so
+            # the first stop() leaves the handle retained; only after the
+            # process is seen to exit does a later stop() clear it.
             fake_proc._exit_delay = 0
             fake_proc.poll()  # Force exit confirmation
 
@@ -406,6 +421,21 @@ class TestBinaryManager(unittest.TestCase):
             self.assertIn("terminate", fake_proc._calls)
             self.assertIn("kill", fake_proc._calls)
             self.assertIsNone(bm.proc, "Process handle should be cleared after SIGKILL")
+
+    def test_stop_handles_process_exiting_before_terminate(self):
+        """A process that exits between is_running() and terminate() is a
+        successful stop: terminate() raises ProcessLookupError, the handle is
+        cleared, and stop() returns True instead of retaining a dead handle."""
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            log_recorder = _LogRecorder()
+            bm = binary_manager.BinaryManager(addon, work, logger=log_recorder)
+            fake_proc = _FakeProcessForStop()
+            fake_proc._exit_before_terminate = True
+            bm.proc = fake_proc
+
+            result = bm.stop(term_timeout=0.1, kill_timeout=0.1)
+            self.assertTrue(result, "a process that already exited is a successful stop")
+            self.assertIsNone(bm.proc, "handle must be cleared once exit is confirmed")
 
     def test_stop_refusal_case(self):
         """Test refusal case: both term and kill waits time out, stop() returns False, process handle is retained, and a log is emitted."""
