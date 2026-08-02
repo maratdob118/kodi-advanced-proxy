@@ -37,8 +37,6 @@ class ProxySupervisor(object):
         self.store = profiles.ProfileStore(
             os.path.join(work_dir, "profiles.json"))
         self.bin = self._make_binary_manager()
-        self.last_reload = 0.0
-        self.reload_interval = 180.0
         self.consecutive_failures = 0
         self.last_error = None
         self._restart_at = None
@@ -156,7 +154,6 @@ class ProxySupervisor(object):
             self.log(self.last_error, "error")
             self._write_state()
             return False
-        self.last_reload = time.time()
         self.consecutive_failures = 0
         self._was_running = True
         self._last_active_tag = self.store.active_tag
@@ -171,7 +168,6 @@ class ProxySupervisor(object):
     def restart(self):
         """Rebuild config from current profiles/settings, then restart the engine."""
         ok = self.build_and_write_config()
-        self.last_reload = time.time()
         if not ok:
             self.log("restart: config build failed, keeping current process", "warn")
             return
@@ -209,9 +205,6 @@ class ProxySupervisor(object):
                             % (self.bin.engine,
                                self.effective_port or self.settings.get("local_port")))
             self._watch_active_change()
-            if now - self.last_reload >= self.reload_interval:
-                self.log("refreshing config")
-                self.restart()
             return
 
         if self.bin.proc is not None:
