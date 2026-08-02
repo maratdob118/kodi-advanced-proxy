@@ -244,12 +244,21 @@ class BinaryManager(object):
                     self.log("Failed to kill process %s (pid %s): %s" % (self.engine, self.proc.pid, e), "warn")
                     return False
             except Exception as e:
-                self.log("Failed to terminate process %s (pid %s): %s" % (self.engine, self.proc.pid, e), "warn")
+                if self.proc is not None and self.proc.poll() is not None:
+                    self.log("%s exited before SIGTERM (code %s)"
+                             % (self.engine, self.proc.returncode))
+                    self.proc = None
+                    if port is not None:
+                        self._wait_for_listener_release(port, release_timeout)
+                    return True
+                self.log("Failed to terminate process %s (pid %s): %s"
+                         % (self.engine, self.proc.pid, e), "warn")
                 try:
                     self.proc.kill()
                     self.proc.wait(timeout=kill_timeout)
                 except Exception as e:
-                    self.log("Failed to kill process %s (pid %s): %s" % (self.engine, self.proc.pid, e), "warn")
+                    self.log("Failed to kill process %s (pid %s): %s"
+                             % (self.engine, self.proc.pid, e), "warn")
                     return False
         self.proc = None
         if port is not None:
