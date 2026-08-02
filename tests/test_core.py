@@ -10,10 +10,81 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
+
+
+class _LogRecorder(object):
+    """Records log messages for assertions."""
+    
+    def __init__(self):
+        self.entries = []
+    
+    def __call__(self, msg, level="info"):
+        self.entries.append((level, msg))
+
+
+class _FakeProcessForStop(object):
+    """Fake subprocess.Popen for BinaryManager.stop() tests."""
+    
+    def __init__(self):
+        self._exit_delay = 0
+        self._terminated = False
+        self._killed = False
+        self._exit_code = None
+        self._calls = []
+        self.pid = 12345
+        self._wait_calls = 0
+    
+    def terminate(self):
+        self._calls.append("terminate")
+        self._terminated = True
+    
+    def kill(self):
+        self._calls.append("kill")
+        self._killed = True
+    
+    def poll(self):
+        if self._exit_delay > 0:
+            self._exit_delay -= 1
+            return None
+        if self._terminated and self._exit_code is None:
+            self._exit_code = 0
+        return self._exit_code
+    
+    def wait(self, timeout=None):
+        self._wait_calls += 1
+        if self._wait_calls <= self._exit_delay:
+            raise subprocess.TimeoutExpired([], timeout)
+        if (self._terminated or self._killed) and self._exit_code is None:
+            self._exit_code = 0
+        return self._exit_code
+
+
+class _FakeBinaryClock(object):
+    """`time` module stand-in for BinaryManager polling bounds."""
+
+    def __init__(self, now=1000.0):
+        self.now = now
+        self.sleeps = []
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def _write_executable(path):
+    with open(path, "w") as f:
+        f.write("#!/bin/sh\nexit 0\n")
+    os.chmod(path, 0o755)
+    return path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "..", "service.advancedproxy", "src")
@@ -258,6 +329,93 @@ class TestBinaryManager(unittest.TestCase):
         with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
             bm = binary_manager.BinaryManager(addon, work, custom_path="/nonexistent/x")
             self.assertIsNone(bm._resolve_custom())
+
+    def test_stop_sigterm_bounded_wait(self):
+        """Test SIGTERM + bounded wait: process.terminate() is called, handle is retained until exit is confirmed, and self.proc is set to None only after exit."""
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(addon, work)
+            fake_proc = _FakeProcessForStop()
+            # 3 simulated steps: the poll() in is_running() consumes one, each
+            # wait() one more, so both term and kill waits time out while the
+            # handle must stay retained (same budget as the refusal case).
+            fake_proc._exit_delay = 3
+            bm.proc = fake_proc
+
+            bm.stop()
+            self.assertEqual(fake_proc._calls, ["terminate", "kill"],
+                             "SIGTERM must be sent before SIGKILL")
+            self.assertIsNotNone(bm.proc, "Process handle should be retained until exit is confirmed")
+
+            # Simulate process exit after delay
+            fake_proc._exit_delay = 0
+            fake_proc.poll()  # Force exit confirmation
+
+            # Call stop() again to confirm handle is cleared
+            bm.stop()
+            self.assertIsNone(bm.proc, "Process handle should be cleared after exit is confirmed")
+
+    def test_stop_sigkill_escalation(self):
+        """Test SIGKILL escalation: wait(term_timeout) times out, SIGKILL is sent, and wait(kill_timeout) is called after SIGKILL."""
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(addon, work)
+            fake_proc = _FakeProcessForStop()
+            fake_proc._exit_delay = 2  # Ensure term_timeout and kill_timeout expire
+            bm.proc = fake_proc
+            
+            # Call stop() and assert terminate() is called
+            bm.stop(term_timeout=0.1, kill_timeout=0.1)
+            self.assertIn("terminate", fake_proc._calls)
+            self.assertIn("kill", fake_proc._calls)
+            self.assertIsNone(bm.proc, "Process handle should be cleared after SIGKILL")
+
+    def test_stop_refusal_case(self):
+        """Test refusal case: both term and kill waits time out, stop() returns False, process handle is retained, and a log is emitted."""
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            log_recorder = _LogRecorder()
+            bm = binary_manager.BinaryManager(addon, work, logger=log_recorder)
+            fake_proc = _FakeProcessForStop()
+            fake_proc._exit_delay = 3  # Ensure term_timeout and kill_timeout expire
+            bm.proc = fake_proc
+            
+            # Call stop() and assert it returns False
+            result = bm.stop(term_timeout=0.1, kill_timeout=0.1)
+            self.assertFalse(result, "stop() should return False if both waits time out")
+            self.assertIsNotNone(bm.proc, "Process handle should be retained if both waits time out")
+            self.assertIn("Process %s (pid %s) did not exit after SIGKILL" % (bm.engine, fake_proc.pid), log_recorder.entries[-1][1])
+
+    def test_stop_waits_for_listener_release(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(addon, work)
+            fake_proc = _FakeProcessForStop()
+            bm.proc = fake_proc
+            clock = _FakeBinaryClock()
+            with patch.object(port_utils, "port_in_use",
+                              side_effect=[True, True, False]), \
+                    patch.object(binary_manager, "time", clock):
+                ok = bm.stop(port=1080, release_timeout=5.0)
+            self.assertTrue(ok)
+            self.assertIsNone(bm.proc)
+            self.assertEqual(clock.sleeps, [0.1, 0.1],
+                             "release polling must step in 100 ms until the listener is free")
+
+    def test_stop_logs_busy_listener_but_still_returns_true(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            log_recorder = _LogRecorder()
+            bm = binary_manager.BinaryManager(addon, work, logger=log_recorder)
+            fake_proc = _FakeProcessForStop()
+            bm.proc = fake_proc
+            clock = _FakeBinaryClock()
+            with patch.object(port_utils, "port_in_use",
+                              side_effect=lambda *a, **k: True), \
+                    patch.object(binary_manager, "time", clock):
+                ok = bm.stop(port=1080, release_timeout=0.3)
+            self.assertTrue(ok, "process death was confirmed, so stop() stays True")
+            self.assertIsNone(bm.proc)
+            self.assertEqual(clock.sleeps, [0.1, 0.1, 0.1],
+                             "polling must continue until release_timeout elapses")
+            self.assertTrue(any(lvl == "warn" and "1080" in m
+                                for lvl, m in log_recorder.entries),
+                            log_recorder.entries)
 
 
 class TestPluginArgs(unittest.TestCase):
