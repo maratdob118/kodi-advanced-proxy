@@ -291,3 +291,11 @@ msgstr ""
 msgctxt "#32221"
 msgid "Switched to %s (Manual mode enabled)"
 msgstr ""
+
+msgctxt "#32300"
+msgid "Auto-configure Kodi proxy"
+msgstr ""
+
+msgctxt "#32301"
+msgid "Point Kodi's network proxy at Advanced Proxy's actual port and restore previous values when the proxy stops."
+msgstr ""
