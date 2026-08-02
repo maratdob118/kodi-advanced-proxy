@@ -10,10 +10,12 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 import urllib.request
 import zipfile
 
 import osarch
+import port_utils
 
 SINGBOX_VERSION = "1.13.14"
 XRAY_VERSION = "25.8.3"
@@ -201,20 +203,52 @@ class BinaryManager(object):
         self.log("%s started, pid %s" % (self.engine, self.proc.pid))
         return self.proc
 
-    def stop(self):
+    def stop(self, port=None, term_timeout=5.0, kill_timeout=5.0, release_timeout=5.0):
         if self.proc is None:
-            return
+            return True
         if self.is_running():
             self.log("Stopping %s (pid %s)" % (self.engine, self.proc.pid))
             try:
                 self.proc.terminate()
-                self.proc.wait(timeout=5)
-            except Exception:
+                self.proc.wait(timeout=term_timeout)
+            except subprocess.TimeoutExpired:
                 try:
                     self.proc.kill()
-                except Exception:
-                    pass
+                    self.proc.wait(timeout=kill_timeout)
+                except subprocess.TimeoutExpired:
+                    self.log("Process %s (pid %s) did not exit after SIGKILL" % (self.engine, self.proc.pid), "warn")
+                    return False
+                except Exception as e:
+                    self.log("Failed to kill process %s (pid %s): %s" % (self.engine, self.proc.pid, e), "warn")
+                    return False
+            except Exception as e:
+                self.log("Failed to terminate process %s (pid %s): %s" % (self.engine, self.proc.pid, e), "warn")
+                try:
+                    self.proc.kill()
+                    self.proc.wait(timeout=kill_timeout)
+                except Exception as e:
+                    self.log("Failed to kill process %s (pid %s): %s" % (self.engine, self.proc.pid, e), "warn")
+                    return False
         self.proc = None
+        if port is not None:
+            self._wait_for_listener_release(port, release_timeout)
+        return True
+
+    def _wait_for_listener_release(self, port, release_timeout):
+        """Poll until the listener on `port` is released or the bound elapses.
+
+        A timeout is logged but non-fatal: another process may legitimately
+        own the port. Returns True when the listener is free.
+        """
+        deadline = time.time() + release_timeout
+        while True:
+            if not port_utils.port_in_use(port):
+                return True
+            if time.time() >= deadline:
+                break
+            time.sleep(0.1)
+        self.log("Listener on port %s still busy after %ss" % (port, release_timeout), "warn")
+        return False
 
     def restart(self, config_path):
         self.stop()
