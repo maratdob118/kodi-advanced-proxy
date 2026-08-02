@@ -25,10 +25,12 @@ def _default_notify(msg, error=False):
 
 
 class ProxySupervisor(object):
-    def __init__(self, settings, addon_dir, work_dir, logger=None, notify=None):
+    def __init__(self, settings, addon_dir, work_dir, logger=None, notify=None,
+                 should_stop=None):
         self.settings = dict(settings)
         self.log = logger or _default_log
         self.notify = notify or _default_notify
+        self.should_stop = should_stop or (lambda: False)
         self.addon_dir = addon_dir
         self.work_dir = work_dir
         self.config_path = os.path.join(work_dir, "engine.json")
@@ -43,6 +45,7 @@ class ProxySupervisor(object):
         self._was_running = False
         self._last_active_tag = None
         self.effective_port = None
+        self._shutting_down = False
 
     def _make_binary_manager(self):
         return binary_manager.BinaryManager(
@@ -142,13 +145,29 @@ class ProxySupervisor(object):
         except OSError:
             pass
 
+    def begin_shutdown(self):
+        """Enter the shutting-down state. Idempotent.
+
+        A pending watchdog restart is cancelled immediately and no later
+        start/restart call can bring the engine back up.
+        """
+        self._shutting_down = True
+        self._restart_at = None
+
     def start(self):
+        if self._shutting_down:
+            self.log("start: shutting down, engine not started", "warn")
+            return False
         self._resolve_effective_port()
+        return self._start_with_port()
+
+    def _start_with_port(self):
+        """Start the engine with the already-resolved effective port."""
         if not self.build_and_write_config():
             self._write_state()
             return False
         try:
-            self.bin.start(self.config_path)
+            self.bin.start(self.config_path, port=self.effective_port)
         except Exception as e:
             self.last_error = "failed to start %s: %s" % (self.bin.engine, e)
             self.log(self.last_error, "error")
@@ -161,17 +180,21 @@ class ProxySupervisor(object):
         return True
 
     def stop(self):
-        self.bin.stop()
+        self.begin_shutdown()
+        self.bin.stop(port=self.effective_port)
         self._was_running = False
         self._write_state()
 
     def restart(self):
         """Rebuild config from current profiles/settings, then restart the engine."""
+        if self._shutting_down:
+            self.log("restart: shutting down, engine not restarted", "warn")
+            return
         ok = self.build_and_write_config()
         if not ok:
             self.log("restart: config build failed, keeping current process", "warn")
             return
-        self.bin.restart(self.config_path)
+        self.bin.restart(self.config_path, port=self.effective_port)
         self._last_active_tag = self.store.active_tag
 
     def reconfigure_engine(self):
@@ -181,14 +204,18 @@ class ProxySupervisor(object):
         instance before swapping in a new one, so the old process releases
         its port before a new one tries to bind it. Replacing self.bin first
         would silently orphan the old process (it holds the port forever).
+        The effective port is resolved once and handed to the internal
+        already-resolved start path.
         """
+        if self._shutting_down:
+            return False
         was_running = self.bin.is_running()
         if was_running:
-            self.bin.stop()
+            self.bin.stop(port=self.effective_port)
         self.bin = self._make_binary_manager()
         self._resolve_effective_port()
         if was_running or (self.settings.get("autostart") and self.store.enabled()):
-            self.start()
+            self._start_with_port()
         return self.bin.is_running()
 
     # ----- tick ------------------------------------------------------
@@ -210,6 +237,11 @@ class ProxySupervisor(object):
         if self.bin.proc is not None:
             code = self.bin.proc.returncode
             self.bin.proc = None
+            if self._shutting_down or self.should_stop():
+                self.begin_shutdown()
+                self.log("%s exited during shutdown (code %s)"
+                         % (self.bin.engine, code), "info")
+                return
             if self._was_running:
                 self._was_running = False
                 self._write_state()
@@ -223,6 +255,9 @@ class ProxySupervisor(object):
 
         if self._restart_at is None:
             return
+        if self._shutting_down or self.should_stop():
+            self.begin_shutdown()
+            return
         if self.consecutive_failures > 10:
             if self.consecutive_failures == 11:
                 self.log("too many restart failures; giving up until settings change", "error")
@@ -231,7 +266,7 @@ class ProxySupervisor(object):
         if now >= self._restart_at:
             self._restart_at = None
             try:
-                self.bin.start(self.config_path)
+                self.bin.start(self.config_path, port=self.effective_port)
             except Exception as e:
                 self.log("restart failed: %s" % e, "error")
 
