@@ -238,7 +238,7 @@ class BinaryManager(object):
                     self.proc.kill()
                     self.proc.wait(timeout=kill_timeout)
                 except subprocess.TimeoutExpired:
-                    self.log("Process %s (pid %s) did not exit after SIGKILL" % (self.engine, self.proc.pid), "warn")
+                    self.log("Process %s (pid %s) did not exit after SIGKILL; handle retained" % (self.engine, self.proc.pid), "warn")
                     return False
                 except Exception as e:
                     self.log("Failed to kill process %s (pid %s): %s" % (self.engine, self.proc.pid, e), "warn")
