@@ -154,11 +154,20 @@ Run: `python3 -m unittest tests.test_core tests.test_proxy_integration -v`
 **Files:**
 - Create: `docs/manual-qa-libreelec.md`
 
-- [ ] Install updated ZIP on `root@192.168.31.133` through Kodi UI.
+Runtime integration, on `root@192.168.31.133`:
+
+- [ ] Install the updated ZIP through the Kodi UI.
 - [ ] Start with Kodi proxy disabled and YouTube proxy source 0; confirm automatic correction.
 - [ ] Confirm YouTube traffic appears in `engine.log`.
 - [ ] Occupy 1080; restart and confirm Kodi follows fallback port.
 - [ ] Disable Advanced Proxy and confirm previous settings restore.
+
+Live repository install, once `bigping.repository` is deployed to GitHub Pages:
+
+- [ ] Install `repository.bigping-<version>.zip` on a clean profile via "Install from zip file".
+- [ ] Install `service.advancedproxy` from Install from repository → BigPing → Services, confirming the universal ZIP is fetched from the Pages `datadir` over HTTPS.
+- [ ] Confirm the armv7 binary directory is selected at runtime from the universal ZIP, then re-run the integration checks above on the repository-installed copy.
+- [ ] Publish a newer version and confirm Kodi offers and applies the update after a repository refresh.
 
 ---
 
