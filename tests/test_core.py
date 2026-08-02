@@ -394,7 +394,10 @@ class TestBinaryManager(unittest.TestCase):
             result = bm.stop(term_timeout=0.1, kill_timeout=0.1)
             self.assertFalse(result, "stop() should return False if both waits time out")
             self.assertIsNotNone(bm.proc, "Process handle should be retained if both waits time out")
-            self.assertIn("Process %s (pid %s) did not exit after SIGKILL" % (bm.engine, fake_proc.pid), log_recorder.entries[-1][1])
+            self.assertTrue(any(lvl == "warn" and "did not exit after SIGKILL" in m
+                                and "handle retained" in m
+                                for lvl, m in log_recorder.entries),
+                            log_recorder.entries)
 
     def test_stop_waits_for_listener_release(self):
         with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
