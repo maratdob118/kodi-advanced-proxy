@@ -2334,7 +2334,7 @@ class TestSubscriptionDecode(unittest.TestCase):
     def test_text_body_with_profile_lines_is_used_as_is(self):
         # A plain-text body with profile lines must decode as text. A true
         # text-and-base64 dual body cannot exist here: base64's alphabet
-        # excludes ':' and '/', which every profile scheme requires.
+        # excludes ':', which every profile scheme requires.
         lines = self.subscriptions.decode_subscription((VLESS + "\n").encode())
         self.assertEqual(lines, [VLESS])
 
