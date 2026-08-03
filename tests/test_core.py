@@ -2411,15 +2411,39 @@ class TestSupervisorTick(unittest.TestCase):
     def test_refresh_removing_active_reconfigures_in_manual_mode(self):
         self.sup.settings["subscription_interval_hours"] = 24
         self._started()
-        self.sup.store.add_uri(HY2, subscription="sub-x")
+        parsed, _ = parsers.parse_lines([HY2])
+        self.sup.store.add_subscription_profiles(parsed, "sub-x")
         self.sup.store.set_active("AUTO:Hysteria2")
-        reconfigured = []
-        self.sup.reconfigure_engine = lambda: reconfigured.append(1) or True
+        self.sup._make_binary_manager = lambda: _FakeBin("new", self.calls)
         self.sup.refresh_subscriptions = lambda now, interval: (
             self.sup.store.remove_by_subscription("sub-x") or True)
         self.sup.tick()
-        self.assertEqual(reconfigured, [1],
-                         "removing the active profile must reconfigure")
+        self.assertEqual(self.sup.store.active_tag, "AUTO:VLESS",
+                         "active profile must be re-picked after removal")
+        self.assertIn(("start", "new", self.sup.effective_port), self.calls,
+                      "engine must restart through the config-write path")
+        with open(self.sup.config_path) as f:
+            cfg = json.load(f)
+        sel = [o for o in cfg["outbounds"] if o["type"] == "selector"][0]
+        self.assertEqual(sel["default"], "AUTO:VLESS",
+                         "rebuilt config must reference the re-picked profile")
+
+    def test_refresh_changing_profiles_during_backoff_does_not_start_early(self):
+        self.sup.settings["subscription_interval_hours"] = 24
+        self._started()
+        self.sup.bin.crash()
+        self.sup.tick()  # arms the restart at now + 2s
+        self.calls[:] = []
+        self.clock.advance(1)
+        self.sup.refresh_subscriptions = lambda now, interval: True
+        self.sup.tick()
+        self.assertNotIn("start", self._kinds(),
+                         "refresh must not preempt the pending backoff restart")
+        self.assertIsNotNone(self.sup._restart_at)
+        self.clock.advance(2)
+        self.sup.tick()
+        self.assertIn("start", self._kinds(),
+                      "the watchdog restart still fires on schedule")
 
     def test_refresh_in_urltest_mode_reconfigures(self):
         self.sup.settings["mode"] = "urltest"

@@ -319,12 +319,19 @@ class ProxySupervisor(object):
         return changed
 
     def _apply_subscription_changes(self):
-        """Re-pick the active profile and rebuild the engine config."""
+        """Re-pick the active profile and rebuild the engine config.
+
+        When the watchdog already armed a restart, only rebuild the config:
+        the pending restart fires on its own backoff schedule and must not be
+        preempted by an early start.
+        """
         if not self.store.enabled():
             self.log("no enabled profiles after subscription refresh", "warn")
             return
         if self.bin.is_running():
             self.reconfigure_engine()
+        elif self._restart_at is not None:
+            self.build_and_write_config()
         elif self.settings.get("autostart"):
             self._start_with_port()
 
