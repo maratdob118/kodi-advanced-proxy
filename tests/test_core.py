@@ -2703,6 +2703,13 @@ class _FakeProfileStore(object):
         self.added = []
         self.removed = []
 
+    @staticmethod
+    def _identity(p):
+        uri = p.get("uri")
+        if uri:
+            return uri
+        return (p.get("protocol"), p.get("server"), p.get("port"))
+
     def tags(self):
         return [p["tag"] for p in self.profiles]
 
@@ -2714,19 +2721,22 @@ class _FakeProfileStore(object):
         return len(parsed)
 
     def sync_subscription(self, parsed, group_id):
-        """Mirror sync: add new links, remove disappeared ones."""
+        """Mirror sync: add new profiles, remove disappeared ones."""
         current = [p for p in self.profiles
                    if p.get("subscription") == group_id]
-        current_by_uri = {p["uri"]: p for p in current}
-        new_by_uri = {p["uri"]: p for p in parsed}
-        removed = [p["tag"] for uri, p in current_by_uri.items()
-                   if uri not in new_by_uri]
+        current_by_id = {self._identity(p): p for p in current}
+        new_ids = {self._identity(p) for p in parsed}
+        removed = [p["tag"] for identity, p in current_by_id.items()
+                   if identity not in new_ids]
         added = []
         for p in parsed:
-            if p["uri"] not in current_by_uri:
+            if self._identity(p) not in current_by_id:
                 p["subscription"] = group_id
                 self.profiles.append(p)
                 added.append(p["tag"])
+        self.profiles = [p for p in self.profiles
+                         if not (p.get("subscription") == group_id
+                                 and p["tag"] in removed)]
         self.removed = removed
         self.added = added
         if self.active_tag not in [p["tag"] for p in self.profiles]:
@@ -2877,6 +2887,76 @@ class TestSubscriptionStore(unittest.TestCase):
         # after advancing past N hours, due
         self.assertEqual(self.store.due(now + 24 * 3600 + 1, 24),
                          [self.store.get(gid)])
+
+    def _json_body(self, outbounds, remarks=None):
+        cfg = {"outbounds": outbounds}
+        if remarks:
+            cfg["remarks"] = remarks
+        return json.dumps(cfg).encode()
+
+    def test_add_json_config_body_works_through_store(self):
+        body = self._json_body([
+            {"type": "vless", "tag": "j-vless", "server": "h1",
+             "server_port": 443, "uuid": "u-1"},
+            {"type": "hysteria2", "tag": "j-hy2", "server": "h2",
+             "server_port": 8443, "password": "pw"},
+        ])
+        group, err = self.store.add("https://example.com/json",
+                                    fetcher=lambda url: body,
+                                    profile_store=self.pstore)
+        self.assertIsNone(err)
+        self.assertEqual(self.pstore.added,
+                         ["j-vless", "j-hy2"])
+        self.assertTrue(all(p.get("uri") is None
+                            for p in self.pstore.profiles))
+
+    def test_refresh_json_mirror_sync_and_empty_guard(self):
+        body1 = self._json_body([
+            {"type": "vless", "tag": "j1", "server": "h1",
+             "server_port": 443, "uuid": "u-1"},
+            {"type": "hysteria2", "tag": "j2", "server": "h2",
+             "server_port": 8443, "password": "pw"},
+        ])
+        group, err = self.store.add("https://example.com/json",
+                                    fetcher=lambda url: body1,
+                                    profile_store=self.pstore)
+        self.assertIsNone(err)
+        gid = group["id"]
+        # refresh with a changed body: drop j2, add j3
+        body2 = self._json_body([
+            {"type": "vless", "tag": "j1", "server": "h1",
+             "server_port": 443, "uuid": "u-1"},
+            {"type": "trojan", "tag": "j3", "server": "h3",
+             "server_port": 443, "password": "pw"},
+        ])
+        added, removed, err = self.store.refresh(gid, fetch=lambda url: body2,
+                                                 profile_store=self.pstore)
+        self.assertIsNone(err)
+        self.assertEqual(removed, ["j2"])
+        self.assertIn("j3", added)
+        self.assertEqual(sorted(p["tag"] for p in self.pstore.profiles),
+                         ["j1", "j3"])
+        # empty body must NOT wipe the group
+        added, removed, err = self.store.refresh(
+            gid, fetch=lambda url: b"no usable profiles here",
+            profile_store=self.pstore)
+        self.assertIsNotNone(err)
+        self.assertEqual(removed, [])
+        self.assertEqual(sorted(p["tag"] for p in self.pstore.profiles),
+                         ["j1", "j3"])
+
+    def test_cascade_delete_json_group(self):
+        body = self._json_body([
+            {"type": "vless", "tag": "j1", "server": "h1",
+             "server_port": 443, "uuid": "u-1"},
+        ])
+        group, err = self.store.add("https://example.com/json",
+                                    fetcher=lambda url: body,
+                                    profile_store=self.pstore)
+        self.assertIsNone(err)
+        self.store.remove(group["id"], self.pstore)
+        self.assertEqual(self.pstore.removed, ["j1"])
+        self.assertEqual(self.store.groups(), [])
 
 
 class TestEngineVersionContract(unittest.TestCase):
