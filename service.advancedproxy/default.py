@@ -194,24 +194,6 @@ def _action_clear(handle):
     _finish_action(handle)
 
 
-def _action_activate(handle, tag):
-    store = _store()
-    if _mode() == "manual":
-        p = store.get(tag)
-        if p and store.set_active(tag):
-            _notify(_ls(32212) % tag)
-        else:
-            _notify(_ls(32219), error=True)
-    else:
-        xbmcaddon.Addon(ADDON_ID).setSetting("mode", "1")
-        store = _store()
-        if store.set_active(tag):
-            _notify(_ls(32221) % tag)
-        else:
-            _notify(_ls(32219), error=True)
-    _finish_action(handle)
-
-
 def _action_activate_reachable(handle, tag):
     """Activate TAG only when reachable; otherwise offer the next one."""
     store = _store()
