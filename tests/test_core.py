@@ -2370,6 +2370,68 @@ class TestSupervisorTick(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertTrue(self.sup.bin.is_running())
 
+    # ----- subscription refresh scheduling --------------------------
+
+    def test_tick_refreshes_due_subscriptions_once(self):
+        self.sup.settings["subscription_interval_hours"] = 24
+        refresh_calls = []
+        self.sup.refresh_subscriptions = lambda now, interval: (
+            refresh_calls.append((now, interval)) or True)
+        self.clock.advance(100)
+        self.sup.tick()
+        self.assertEqual(len(refresh_calls), 1)
+        self.assertEqual(refresh_calls[0][1], 24)
+
+    def test_refresh_in_flight_is_not_reentered(self):
+        self.sup.settings["subscription_interval_hours"] = 24
+        refresh_calls = []
+
+        def refresher(now, interval):
+            refresh_calls.append(1)
+            self.sup.tick()  # re-entrant tick must not refresh again
+            return False
+
+        self.sup.refresh_subscriptions = refresher
+        self.sup.tick()
+        self.assertEqual(len(refresh_calls), 1)
+
+    def test_refresh_during_watchdog_backoff_does_not_delay_restart(self):
+        self.sup.settings["subscription_interval_hours"] = 24
+        refresh_calls = []
+        self.sup.refresh_subscriptions = lambda now, interval: (
+            refresh_calls.append(1) or False)
+        self._started()
+        self.sup.bin.crash()
+        self.sup.tick()  # arms the restart at now + 2s
+        self.clock.advance(3)
+        self.sup.tick()  # refresh due AND the pending restart fires
+        self.assertGreaterEqual(len(refresh_calls), 1)
+        self.assertIn("start", self._kinds())
+
+    def test_refresh_removing_active_reconfigures_in_manual_mode(self):
+        self.sup.settings["subscription_interval_hours"] = 24
+        self._started()
+        self.sup.store.add_uri(HY2, subscription="sub-x")
+        self.sup.store.set_active("AUTO:Hysteria2")
+        reconfigured = []
+        self.sup.reconfigure_engine = lambda: reconfigured.append(1) or True
+        self.sup.refresh_subscriptions = lambda now, interval: (
+            self.sup.store.remove_by_subscription("sub-x") or True)
+        self.sup.tick()
+        self.assertEqual(reconfigured, [1],
+                         "removing the active profile must reconfigure")
+
+    def test_refresh_in_urltest_mode_reconfigures(self):
+        self.sup.settings["mode"] = "urltest"
+        self.sup.settings["subscription_interval_hours"] = 24
+        self._started()
+        reconfigured = []
+        self.sup.reconfigure_engine = lambda: reconfigured.append(1) or True
+        self.sup.refresh_subscriptions = lambda now, interval: True
+        self.sup.tick()
+        self.assertEqual(reconfigured, [1],
+                         "profile-set change in urltest must reconfigure")
+
 
 class _FakeProfileStore(object):
     """ProfileStore stand-in for SubscriptionStore cascade tests."""
