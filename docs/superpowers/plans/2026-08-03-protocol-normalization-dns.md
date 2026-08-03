@@ -73,9 +73,15 @@ Keep the Kodi-free module split. `parsers.py` gains `parse_config` (JSON sing-bo
 
 ## Task 7: helpers + settings + UI (RED → GREEN)
 
-- [ ] RED: `TestHelpers` gains `parse_dns_server` cases (plain IP → udp, `https://` → doh, `tls://` → dot, garbage → error/None) and the new settings (`dns_server`, `dns_query_strategy`) defaults/normalization. Settings XML contract: `dns_server` and `dns_query_strategy` present in the subscriptions category; `strings.po` has the new labels (use the next unused msgctxt IDs after 32240, e.g. 32241/32242 — verify uniqueness against the file).
-- [ ] GREEN: implement `helpers.parse_dns_server`, add the settings to `helpers.get_settings()`/defaults, `settings.xml`, and `strings.po` (msgid texts: e.g. "DNS server (8.8.8.8 / https://… / tls://…)" and "DNS query strategy").
+- [ ] RED: `TestHelpers` gains `parse_dns_server` cases (plain IP → udp, `https://` → doh, `tls://` → dot, garbage → error/None) and the new settings (`dns_server`, `dns_query_strategy`, `direct_torrent`) defaults/normalization. Settings XML contract: `dns_server`, `dns_query_strategy`, and `direct_torrent` present in the subscriptions category; `strings.po` has the new labels (use the next unused msgctxt IDs after 32240, e.g. 32241-32243 — verify uniqueness against the file).
+- [ ] GREEN: implement `helpers.parse_dns_server`, add the settings to `helpers.get_settings()`/defaults, `settings.xml`, and `strings.po` (msgid texts: e.g. "DNS server (8.8.8.8 / https://… / tls://…)", "DNS query strategy", "Direct BitTorrent traffic").
 - [ ] Run focused helper tests (GREEN evidence), then `python3 scripts/validate_addon.py .` (must pass: every label/help/heading ID referenced in settings.xml must exist in strings.po) + full suite.
+
+## Task 7b: Torrent direct routing (RED → GREEN)
+
+- [ ] RED: `TestBuildSingbox` and `TestBuildXray` gain cases: with `direct_torrent=True` the sing-box config has a `route.rules` entry `{"protocol": "bittorrent", "action": "route", "outbound": "direct"}` before the private-IP rule, and the Xray config has `{"type": "field", "protocol": ["bittorrent"], "outboundTag": "direct"}` in `routing.rules`; with `direct_torrent=False` (default) neither rule is present.
+- [ ] GREEN: add the bittorrent rule to both builders, gated on `settings.get("direct_torrent")`.
+- [ ] Run focused builder tests (GREEN evidence), then full suite.
 
 ## Task 8: Verification (local + live)
 
