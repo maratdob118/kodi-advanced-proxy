@@ -10,6 +10,18 @@ import os
 import parsers
 
 
+def _identity(profile):
+    """Dedup key for a profile: URI when present, else (protocol, server, port).
+
+    Config-sourced profiles (from parse_config) carry no uri, so their
+    identity falls back to the endpoint triple.
+    """
+    uri = profile.get("uri")
+    if uri:
+        return uri
+    return (profile.get("protocol"), profile.get("server"), profile.get("port"))
+
+
 class ProfileStore(object):
     def __init__(self, path):
         self.path = path
@@ -76,25 +88,23 @@ class ProfileStore(object):
         return p, None
 
     def add_subscription_profiles(self, parsed, group_id):
-        """Append PARSED profiles tagged with GROUP_ID, de-duping by URI.
+        """Append PARSED profiles tagged with GROUP_ID, de-duping by identity.
 
-        A manual profile (no subscription) with the same URI wins: its copy
-        from the subscription is skipped. Profiles without a URI are always
-        added. Returns the number added.
+        A manual profile (no subscription) with the same identity wins: its
+        copy from the subscription is skipped. Profiles without a URI are
+        deduped by (protocol, server, port). Returns the number added.
         """
-        existing = {p.get("uri") for p in self.profiles
-                    if p.get("uri") is not None
-                    and p.get("subscription") is None}
+        existing = {_identity(p) for p in self.profiles
+                    if p.get("subscription") is None}
         added = 0
         for p in parsed:
-            uri = p.get("uri")
-            if uri is not None and uri in existing:
+            identity = _identity(p)
+            if identity in existing:
                 continue
             p["enabled"] = True
             p["subscription"] = group_id
             self.profiles.append(p)
-            if uri is not None:
-                existing.add(uri)
+            existing.add(identity)
             added += 1
         if added and not self.active_tag:
             self.active_tag = self.profiles[0]["tag"]
@@ -122,22 +132,21 @@ class ProfileStore(object):
         """
         current = [p for p in self.profiles
                    if p.get("subscription") == group_id]
-        current_by_uri = {p.get("uri"): p for p in current}
-        new_uris = {p.get("uri") for p in parsed}
-        removed = [p["tag"] for uri, p in current_by_uri.items()
-                   if uri not in new_uris]
+        current_by_id = {_identity(p): p for p in current}
+        new_ids = {_identity(p) for p in parsed}
+        removed = [p["tag"] for identity, p in current_by_id.items()
+                   if identity not in new_ids]
         added = []
-        manual = {p.get("uri") for p in self.profiles
-                  if p.get("uri") is not None
-                  and p.get("subscription") is None}
+        manual = {_identity(p) for p in self.profiles
+                  if p.get("subscription") is None}
         for p in parsed:
-            uri = p.get("uri")
-            if uri in current_by_uri:
-                current_by_uri[uri]["protocol"] = p["protocol"]
-                current_by_uri[uri]["server"] = p["server"]
-                current_by_uri[uri]["port"] = p["port"]
+            identity = _identity(p)
+            if identity in current_by_id:
+                current_by_id[identity]["protocol"] = p["protocol"]
+                current_by_id[identity]["server"] = p["server"]
+                current_by_id[identity]["port"] = p["port"]
                 continue
-            if uri is not None and uri in manual:
+            if identity in manual:
                 continue
             p["enabled"] = True
             p["subscription"] = group_id

@@ -213,6 +213,11 @@ class SubscriptionStore(object):
             group["last_error"] = str(e)
             self.save()
             return [], [], str(e)
+        if not parsed:
+            # A transient empty/malformed response must not wipe the group.
+            group["last_error"] = "subscription contains no usable profiles"
+            self.save()
+            return [], [], group["last_error"]
         added, removed = [], []
         if profile_store is not None:
             if hasattr(profile_store, "sync_subscription"):
