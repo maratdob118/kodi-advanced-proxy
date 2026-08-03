@@ -169,6 +169,38 @@ class TestParsers(unittest.TestCase):
         p = parsers.parse_uri("hy2://a%2Bb%2F@h:443/?sni=h#T:Hy2")
         self.assertEqual(p["password"], "a+b/")
 
+    def test_disabled_protocols_vless(self):
+        self.assertIsNone(parsers.parse_uri(VLESS, disabled_protocols=("vless",)))
+
+    def test_disabled_protocols_trojan(self):
+        self.assertIsNone(parsers.parse_uri(TROJAN, disabled_protocols=("trojan",)))
+
+    def test_disabled_protocols_hysteria2(self):
+        self.assertIsNone(parsers.parse_uri(HY2, disabled_protocols=("hysteria2",)))
+
+    def test_disabled_protocols_does_not_affect_others(self):
+        p = parsers.parse_uri(VLESS, disabled_protocols=("trojan",))
+        self.assertIsNotNone(p)
+
+    def test_parse_lines_reports_disabled_as_skipped_not_error(self):
+        profs, skipped = parsers.parse_lines(
+            [VLESS, TROJAN], disabled_protocols=("trojan",))
+        self.assertEqual(len(profs), 1)
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("disabled", skipped[0][1])
+
+    def test_is_subscription_url_https(self):
+        self.assertTrue(parsers.is_subscription_url("https://example.com/sub"))
+
+    def test_is_subscription_url_http(self):
+        self.assertTrue(parsers.is_subscription_url("http://example.com/sub"))
+
+    def test_is_subscription_url_false_for_profile(self):
+        self.assertFalse(parsers.is_subscription_url(VLESS))
+
+    def test_is_subscription_url_false_for_junk(self):
+        self.assertFalse(parsers.is_subscription_url("not a url at all"))
+
 
 class TestProfileStore(unittest.TestCase):
     def setUp(self):
@@ -209,6 +241,50 @@ class TestProfileStore(unittest.TestCase):
     def test_active_fallback(self):
         self.store.add_uri(VLESS)
         self.assertEqual(self.store.active()["tag"], "AUTO:VLESS")
+
+    def test_add_uri_persists_subscription_field(self):
+        self.store.add_uri(VLESS, subscription="sub-abc123")
+        self.assertEqual(self.store.get("AUTO:VLESS")["subscription"],
+                         "sub-abc123")
+
+    def test_add_uri_without_subscription_is_none(self):
+        self.store.add_uri(VLESS)
+        self.assertIsNone(self.store.get("AUTO:VLESS").get("subscription"))
+
+    def test_add_subscription_profiles_sets_group_and_enables(self):
+        parsed, _ = parsers.parse_lines([VLESS, HY2])
+        n = self.store.add_subscription_profiles(parsed, "sub-abc123")
+        self.assertEqual(n, 2)
+        self.assertTrue(all(p.get("subscription") == "sub-abc123"
+                            for p in self.store.profiles))
+        self.assertEqual(self.store.active_tag, "AUTO:VLESS")
+
+    def test_add_subscription_profiles_skips_manual_dup_by_uri(self):
+        self.store.add_uri(VLESS)  # manual wins
+        parsed, _ = parsers.parse_lines([VLESS, HY2])
+        for p in parsed:
+            p["uri"] = p.get("uri") or ""
+        n = self.store.add_subscription_profiles(parsed, "sub-abc123")
+        self.assertEqual(n, 1)  # only HY2 added; VLESS skipped
+        self.assertEqual(len(self.store.profiles), 2)
+        self.assertIsNone(self.store.get("AUTO:VLESS").get("subscription"))
+
+    def test_remove_by_subscription_removes_only_that_group(self):
+        self.store.add_uri(VLESS)  # manual
+        parsed, _ = parsers.parse_lines([HY2])
+        self.store.add_subscription_profiles(parsed, "sub-abc123")
+        self.store.remove_by_subscription("sub-abc123")
+        self.assertEqual([p["tag"] for p in self.store.profiles],
+                         ["AUTO:VLESS"])
+        self.assertEqual(self.store.active_tag, "AUTO:VLESS")
+
+    def test_remove_by_subscription_repicks_active(self):
+        parsed, _ = parsers.parse_lines([VLESS, HY2])
+        self.store.add_subscription_profiles(parsed, "sub-abc123")
+        self.store.set_active("AUTO:VLESS")
+        self.store.remove_by_subscription("sub-abc123")
+        self.assertEqual(self.store.profiles, [])
+        self.assertIsNone(self.store.active_tag)
 
 
 class TestBuildSingbox(unittest.TestCase):
@@ -356,6 +432,43 @@ class TestHelpers(unittest.TestCase):
     def test_auto_configure_integration_can_be_disabled(self):
         raw = {"auto_configure_integration": "false"}
         self.assertFalse(helpers.get_settings(reader=lambda: raw)["auto_configure_integration"])
+
+    def test_subscription_settings_defaults(self):
+        s = helpers.get_settings(reader=lambda: {})
+        self.assertEqual(s["subscription_interval_hours"], 0)
+        self.assertIs(s["disable_proto_vless"], False)
+        self.assertIs(s["disable_proto_trojan"], False)
+        self.assertIs(s["disable_proto_hysteria2"], False)
+
+    def test_subscription_settings_normalized(self):
+        raw = {"subscription_interval_hours": "24",
+               "disable_proto_vless": "true",
+               "disable_proto_trojan": "false",
+               "disable_proto_hysteria2": "true"}
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["subscription_interval_hours"], 24)
+        self.assertIs(s["disable_proto_vless"], True)
+        self.assertIs(s["disable_proto_trojan"], False)
+        self.assertIs(s["disable_proto_hysteria2"], True)
+
+    def test_disabled_protocols_empty_by_default(self):
+        self.assertEqual(helpers.disabled_protocols(
+            reader=lambda: {}), ())
+
+    def test_disabled_protocols_from_toggles(self):
+        raw = {"disable_proto_vless": "true",
+               "disable_proto_trojan": "false",
+               "disable_proto_hysteria2": "true"}
+        got = helpers.disabled_protocols(reader=lambda: raw)
+        self.assertEqual(sorted(got), ["hysteria2", "vless"])
+
+    def test_disabled_protocols_merges_legacy_skip_list(self):
+        raw = {"disable_proto_vless": "false",
+               "disable_proto_trojan": "false",
+               "disable_proto_hysteria2": "false",
+               "skip_protocols": "trojan,xhttp"}
+        got = helpers.disabled_protocols(reader=lambda: raw)
+        self.assertEqual(sorted(got), ["trojan", "xhttp"])
 
 
 class TestBinaryManager(unittest.TestCase):

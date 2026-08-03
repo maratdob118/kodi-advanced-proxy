@@ -108,10 +108,11 @@ def _group_id(url):
     return "sub-" + hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
 
 
-def parse_links(links):
+def parse_links(links, disabled_protocols=()):
     """Parse link lines into profiles with their original URI attached."""
-    profiles, skipped = parsers.parse_lines(links)
-    valid = [line for line in links if parsers.parse_uri(line) is not None]
+    profiles, skipped = parsers.parse_lines(links, disabled_protocols)
+    valid = [line for line in links
+             if parsers.parse_uri(line, disabled_protocols) is not None]
     if len(profiles) != len(valid):
         raise ValueError("parse mismatch: %d profiles vs %d valid links"
                          % (len(profiles), len(valid)))

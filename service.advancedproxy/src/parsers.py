@@ -28,9 +28,27 @@ def _hostport(userinfo_host):
     return unquote(userinfo), host, int(port)
 
 
-def parse_uri(line):
-    """Return a neutral profile dict, or None if the scheme is unknown."""
+_PROTOCOL_PREFIXES = {
+    "vless": ("vless://",),
+    "hysteria2": ("hy2://", "hysteria2://"),
+    "trojan": ("trojan://",),
+}
+
+
+def _disabled(line, disabled_protocols):
+    for protocol in disabled_protocols:
+        prefixes = _PROTOCOL_PREFIXES.get(protocol, (protocol + "://",))
+        if any(line.startswith(prefix) for prefix in prefixes):
+            return True
+    return False
+
+
+def parse_uri(line, disabled_protocols=()):
+    """Return a neutral profile dict, or None if the scheme is unknown
+    or the protocol is disabled."""
     line = line.strip()
+    if _disabled(line, disabled_protocols):
+        return None
     if line.startswith("vless://"):
         main, tag, params = _split(line, "vless://")
         uuid, host, port = _hostport(main)
@@ -86,7 +104,15 @@ def parse_uri(line):
     return None
 
 
-def parse_lines(lines):
+def is_subscription_url(line):
+    """True when LINE is an http(s) URL that is not a profile link."""
+    line = (line or "").strip()
+    if parse_uri(line) is not None:
+        return False
+    return line.startswith("http://") or line.startswith("https://")
+
+
+def parse_lines(lines, disabled_protocols=()):
     """Parse many URIs -> (profiles, skipped). skipped = [(line, reason)]."""
     profiles, skipped = [], []
     for line in lines:
@@ -94,6 +120,9 @@ def parse_lines(lines):
         if not line:
             continue
         try:
+            if _disabled(line, disabled_protocols):
+                skipped.append((line[:40], "disabled-protocol"))
+                continue
             p = parse_uri(line)
             if p is None:
                 skipped.append((line[:40], "unknown-scheme"))
