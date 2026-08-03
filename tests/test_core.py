@@ -1287,6 +1287,17 @@ class TestSubscriptionUiContract(unittest.TestCase):
         self.assertIn("helpers.pick_reachable", src,
                       "activation must use the reachability probe")
 
+    def test_default_sub_refresh_applies_protocol_filter(self):
+        path = os.path.join(HERE, "..", "service.advancedproxy", "default.py")
+        with open(path) as f:
+            src = f.read()
+        start = src.index("def _action_sub_refresh(")
+        end = src.index("\ndef ", start + 1)
+        body = src[start:end]
+        self.assertIn("helpers.disabled_protocols()", body,
+                      "manual refresh must skip disabled protocols")
+        self.assertIn("parse_links", body)
+
     def test_settings_xml_has_subscriptions_category(self):
         path = os.path.join(HERE, "..", "service.advancedproxy",
                             "resources", "settings.xml")
