@@ -476,12 +476,6 @@ class TestBuildSingbox(unittest.TestCase):
         ])
         self.assertEqual(cfg["route"]["final"], "proxy")
 
-    def _outbound_type(self, prof, expected_type):
-        cfg, skipped = build_singbox.build_config([prof], self._settings())
-        self.assertEqual(skipped, [])
-        obs = [o for o in cfg["outbounds"] if o["type"] == expected_type]
-        self.assertEqual(len(obs), 1)
-
     def test_vmess_outbound(self):
         prof = parsers.parse_uri(
             "vmess://uuid-1@h1.example:443?security=auto#VM:1")

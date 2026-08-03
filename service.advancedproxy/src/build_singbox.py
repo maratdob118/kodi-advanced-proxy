@@ -178,12 +178,16 @@ def _dns_block(settings):
     server = (settings.get("dns_server") or "").strip()
     strategy = (settings.get("dns_query_strategy") or "").strip()
     if server:
+        # sing-box uses the first server as the implicit final resolver, so
+        # the user's server answers everything except the duckdns rule.
         servers = [{"address": server}]
+        final = None
     else:
         servers = [
             {"type": "udp", "tag": "remote", "server": "1.1.1.1"},
             {"type": "udp", "tag": "local", "server": "77.88.8.8"},
         ]
+        final = "remote"
     # The duckdns local rule needs a "local" entry in both shapes so
     # route.default_domain_resolver stays valid.
     if not any(s.get("tag") == "local" for s in servers):
@@ -194,8 +198,8 @@ def _dns_block(settings):
     }
     if strategy:
         block["strategy"] = strategy
-    if server:
-        block["final"] = "local"
+    if final:
+        block["final"] = final
     return block
 
 
