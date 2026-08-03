@@ -125,7 +125,34 @@ class BinaryManager(object):
             self.log("Installing bundled %s (%s) to work dir" % (self.engine, self.platform))
             shutil.copy2(src, dst)
         self._make_exec(dst)
+        self._sync_geo_files_from_bundle()
         return True
+
+    def _sync_geo_files_from_bundle(self):
+        """Copy geoip.dat/geosite.dat next to the engine when bundled."""
+        if self.engine != "xray":
+            return
+        for name in ("geoip.dat", "geosite.dat"):
+            src = os.path.join(self.addon_dir, "resources", "bin",
+                               self.platform, name)
+            dst = os.path.join(self.work_dir_bin, name)
+            if os.path.exists(src) and (
+                    not os.path.exists(dst)
+                    or os.path.getsize(src) != os.path.getsize(dst)):
+                shutil.copy2(src, dst)
+
+    def _sync_geo_files_from_archive(self, extracted):
+        """Copy geoip.dat/geosite.dat from an extracted engine archive."""
+        if self.engine != "xray":
+            return
+        for name in ("geoip.dat", "geosite.dat"):
+            src = None
+            for root, _dirs, files in os.walk(extracted):
+                if name in files:
+                    src = os.path.join(root, name)
+                    break
+            if src:
+                shutil.copy2(src, os.path.join(self.work_dir_bin, name))
 
     def _make_exec(self, path):
         try:
@@ -172,6 +199,7 @@ class BinaryManager(object):
                 raise RuntimeError("binary %s not found in %s" % (inner, url))
             shutil.copy2(candidate, self.work_binary)
             self._make_exec(self.work_binary)
+            self._sync_geo_files_from_archive(extracted)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 

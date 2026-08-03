@@ -235,6 +235,11 @@ check_platform_engines() {
     has_entry "$ADDON/resources/bin/$platform/xray_version" \
       && stamp_eq "$ADDON/resources/bin/$platform/xray_version" "$XR_VERSION" \
       || die "xray_version stamp missing or != $XR_VERSION"
+    # Xray needs its geo databases next to the binary for geoip:private.
+    for geo in geoip.dat geosite.dat; do
+      has_entry "$ADDON/resources/bin/$platform/$geo" \
+        || die "missing $geo in resources/bin/$platform (Xray requires it)"
+    done
   elif has_entry "$ADDON/resources/bin/$platform/xray_version"; then
     die "xray_version stamp present but no xray binary bundled"
   fi

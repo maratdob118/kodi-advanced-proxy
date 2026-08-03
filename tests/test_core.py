@@ -648,6 +648,7 @@ class TestBuildXray(unittest.TestCase):
         hy = [o for o in cfg["outbounds"] if o["protocol"] == "hysteria"][0]
         self.assertEqual(hy["settings"]["address"], "bigping.duckdns.org")
         self.assertEqual(hy["settings"]["version"], 2)
+        self.assertEqual(hy["streamSettings"]["hysteriaSettings"]["version"], 2)
         self.assertEqual(hy["streamSettings"]["hysteriaSettings"]["auth"],
                          "pass123")
 
@@ -961,6 +962,39 @@ class TestBinaryManager(unittest.TestCase):
         with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
             bm = binary_manager.BinaryManager(addon, work, custom_path="/nonexistent/x")
             self.assertIsNone(bm._resolve_custom())
+
+    def test_xray_geo_files_copied_to_work_dir(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bin_dir = os.path.join(addon, "resources", "bin", "linux_x64")
+            os.makedirs(bin_dir)
+            with open(os.path.join(bin_dir, "xray"), "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(os.path.join(bin_dir, "xray"), 0o755)
+            for name in ("geoip.dat", "geosite.dat"):
+                with open(os.path.join(bin_dir, name), "w") as f:
+                    f.write(name)
+            bm = binary_manager.BinaryManager(
+                addon, work, engine="xray", platform_override="linux_x64")
+            path = bm.ensure_binary()
+            self.assertEqual(path, bm.work_binary)
+            for name in ("geoip.dat", "geosite.dat"):
+                self.assertTrue(
+                    os.path.exists(os.path.join(bm.work_dir_bin, name)),
+                    "%s must be copied next to the engine" % name)
+
+    def test_singbox_does_not_require_geo_files(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bin_dir = os.path.join(addon, "resources", "bin", "linux_x64")
+            os.makedirs(bin_dir)
+            with open(os.path.join(bin_dir, "sing-box"), "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(os.path.join(bin_dir, "sing-box"), 0o755)
+            bm = binary_manager.BinaryManager(
+                addon, work, platform_override="linux_x64")
+            bm.ensure_binary()
+            self.assertFalse(
+                os.path.exists(os.path.join(bm.work_dir_bin, "geoip.dat")),
+                "sing-box needs no geo files")
 
     def test_stop_sigterm_bounded_wait(self):
         """Test SIGTERM + bounded wait: process.terminate() is called, handle is retained until exit is confirmed, and self.proc is set to None only after exit."""

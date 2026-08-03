@@ -151,6 +151,30 @@ _extract_one() {
   install -m 755 -- "${found[0]}" "$dir/$inner" || return 1
 }
 
+_extract_optional() {
+  # $1 archive, $2 filename, $3 dest dir; missing file is not an error.
+  local archive="$1" inner="$2" dir="$3"
+  local -a found=()
+  rm -rf "$TMP/x" || return 1
+  mkdir -p "$TMP/x" || return 1
+  if [[ "$archive" == *.zip ]]; then
+    unzip -qo "$archive" -d "$TMP/x" || return 1
+  else
+    tar xzf "$archive" -C "$TMP/x" || return 1
+  fi
+  mapfile -d '' -t found < <(find "$TMP/x" -type f -name "$inner" -print0)
+  [[ "${#found[@]}" -le 1 ]] || {
+    echo "!! expected at most one $inner, found ${#found[@]}" >&2
+    return 1
+  }
+  [[ "${#found[@]}" -eq 0 ]] && return 0
+  [[ -f "${found[0]}" && ! -L "${found[0]}" ]] || {
+    echo "!! extracted $inner is not a regular file" >&2
+    return 1
+  }
+  install -m 644 -- "${found[0]}" "$dir/$inner" || return 1
+}
+
 _verify_sha256() {
   local file="$1" expected="$2" label="$3" actual
   [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || {
@@ -226,6 +250,10 @@ fetch_xray() {
   expected="$(_read_xray_checksum "$digest_file")" || return 1
   _verify_sha256 "$archive" "$expected" "Xray" || return 1
   _extract_one "$archive" "$inner" "$dir" || return 1
+  # Xray needs its geo databases next to the binary for geoip:private rules.
+  for geo in geoip.dat geosite.dat; do
+    _extract_optional "$archive" "$geo" "$dir" || return 1
+  done
   echo "$XRAY_VERSION" > "$dir/xray_version" || return 1
 }
 

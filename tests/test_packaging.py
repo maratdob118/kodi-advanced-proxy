@@ -91,6 +91,8 @@ class PackagingFixture:
             entries["%s/xray-LICENSE" % prefix] = self.source(
                 "%s/resources/licenses/xray/LICENSE" % ADDON
             )
+            entries["%s/geoip.dat" % prefix] = b"geoip\n"
+            entries["%s/geosite.dat" % prefix] = b"geosite\n"
         if mutation:
             mutation(entries, prefix)
         if into is None:
@@ -191,8 +193,12 @@ class PackagingFixture:
             archive.writestr("release/sing-box.exe", b"sing-box\n")
         with zipfile.ZipFile(xr_archive, "w") as archive:
             archive.writestr("xray", b"xray\n")
+            archive.writestr("geoip.dat", b"geoip\n")
+            archive.writestr("geosite.dat", b"geosite\n")
         with zipfile.ZipFile(xr_win_archive, "w") as archive:
             archive.writestr("xray.exe", b"xray\n")
+            archive.writestr("geoip.dat", b"geoip\n")
+            archive.writestr("geosite.dat", b"geosite\n")
 
         def digest(path):
             with open(path, "rb") as stream:
