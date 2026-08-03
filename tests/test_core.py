@@ -578,6 +578,26 @@ class TestBuildSingbox(unittest.TestCase):
         self.assertTrue(any(s.get("tag") == "local"
                             for s in cfg["dns"]["servers"]))
 
+    def test_torrent_direct_rule_when_enabled(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_singbox.build_config(
+            profs, self._settings(direct_torrent=True))
+        bittorrent = [r for r in cfg["route"]["rules"]
+                      if r.get("protocol") == "bittorrent"]
+        self.assertEqual(len(bittorrent), 1)
+        self.assertEqual(bittorrent[0]["outbound"], "direct")
+        private_idx = next(i for i, r in enumerate(cfg["route"]["rules"])
+                           if r.get("ip_is_private"))
+        bt_idx = next(i for i, r in enumerate(cfg["route"]["rules"])
+                      if r.get("protocol") == "bittorrent")
+        self.assertLess(bt_idx, private_idx)
+
+    def test_torrent_direct_rule_absent_by_default(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_singbox.build_config(profs, self._settings())
+        self.assertFalse(any(r.get("protocol") == "bittorrent"
+                             for r in cfg["route"]["rules"]))
+
     def test_skip_xhttp(self):
         profs, _ = parsers.parse_lines([VLESS, XHTTP])
         cfg, skipped = build_singbox.build_config(profs, self._settings())
@@ -753,6 +773,21 @@ class TestBuildXray(unittest.TestCase):
         self.assertIn("1.1.1.1", cfg["dns"]["servers"])
         self.assertIn("localhost", cfg["dns"]["servers"])
 
+    def test_torrent_direct_rule_when_enabled(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(
+            profs, self._settings(direct_torrent=True))
+        bt = [r for r in cfg["routing"]["rules"]
+              if r.get("protocol") == ["bittorrent"]]
+        self.assertEqual(len(bt), 1)
+        self.assertEqual(bt[0]["outboundTag"], "direct")
+
+    def test_torrent_direct_rule_absent_by_default(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(profs, self._settings())
+        self.assertFalse(any(r.get("protocol") == ["bittorrent"]
+                             for r in cfg["routing"]["rules"]))
+
 
 class TestHelpers(unittest.TestCase):
     def test_defaults(self):
@@ -817,6 +852,41 @@ class TestHelpers(unittest.TestCase):
                "skip_protocols": "trojan,xhttp"}
         got = helpers.disabled_protocols(reader=lambda: raw)
         self.assertEqual(sorted(got), ["trojan", "xhttp"])
+
+    def test_parse_dns_server_udp(self):
+        self.assertEqual(helpers.parse_dns_server("8.8.8.8"),
+                         {"kind": "udp", "host": "8.8.8.8", "port": 53})
+
+    def test_parse_dns_server_doh(self):
+        self.assertEqual(
+            helpers.parse_dns_server("https://dns.google/dns-query"),
+            {"kind": "doh", "host": "dns.google", "port": 443})
+
+    def test_parse_dns_server_dot(self):
+        self.assertEqual(helpers.parse_dns_server("tls://8.8.8.8"),
+                         {"kind": "dot", "host": "8.8.8.8", "port": 853})
+
+    def test_parse_dns_server_empty(self):
+        self.assertIsNone(helpers.parse_dns_server(""))
+        self.assertIsNone(helpers.parse_dns_server(None))
+
+    def test_parse_dns_server_garbage(self):
+        self.assertIsNone(helpers.parse_dns_server("not a dns server"))
+
+    def test_dns_settings_defaults(self):
+        s = helpers.get_settings(reader=lambda: {})
+        self.assertEqual(s["dns_server"], "")
+        self.assertEqual(s["dns_query_strategy"], "")
+        self.assertIs(s["direct_torrent"], False)
+
+    def test_dns_settings_normalized(self):
+        raw = {"dns_server": "tls://1.1.1.1",
+               "dns_query_strategy": "prefer_ipv4",
+               "direct_torrent": "true"}
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["dns_server"], "tls://1.1.1.1")
+        self.assertEqual(s["dns_query_strategy"], "prefer_ipv4")
+        self.assertIs(s["direct_torrent"], True)
 
     def test_pick_reachable_returns_preferred_when_reachable(self):
         profs = [

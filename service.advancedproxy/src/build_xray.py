@@ -174,6 +174,9 @@ def build_config(profiles, settings, active_tag=None):
     mode = settings.get("mode", "urltest")
     rules = [{"type": "field", "ip": ["geoip:private"],
               "outboundTag": "direct"}]
+    if settings.get("direct_torrent"):
+        rules.insert(0, {"type": "field", "protocol": ["bittorrent"],
+                         "outboundTag": "direct"})
     balancer = None
     observatory = None
     if mode == "manual":

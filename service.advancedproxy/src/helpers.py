@@ -28,6 +28,9 @@ _DEFAULTS = {
     "disable_proto_vless": "false",
     "disable_proto_trojan": "false",
     "disable_proto_hysteria2": "false",
+    "dns_server": "",
+    "dns_query_strategy": "",
+    "direct_torrent": "false",
     "log_level": "1",
     "binary_platform_override": "auto",
     "binary_custom_path": "",
@@ -37,6 +40,10 @@ _DEFAULTS = {
 _LOG_LEVELS = {"0": "debug", "1": "info", "2": "warn", "3": "error"}
 _ENGINES = {"0": "sing-box", "1": "xray"}
 _MODES = {"0": "urltest", "1": "manual"}
+_DNS_STRATEGIES = {
+    "0": "", "1": "prefer_ipv4", "2": "ipv4_only",
+    "3": "prefer_ipv6", "4": "ipv6_only",
+}
 
 
 def _read_kodi_settings():
@@ -79,11 +86,35 @@ def get_settings(reader=None):
         "disable_proto_vless": b("disable_proto_vless"),
         "disable_proto_trojan": b("disable_proto_trojan"),
         "disable_proto_hysteria2": b("disable_proto_hysteria2"),
+        "dns_server": s("dns_server"),
+        "dns_query_strategy": _DNS_STRATEGIES.get(str(s("dns_query_strategy")),
+                                                  s("dns_query_strategy")),
+        "direct_torrent": b("direct_torrent"),
         "log_level": _LOG_LEVELS.get(str(s("log_level")), "info"),
         "binary_platform_override": s("binary_platform_override"),
         "binary_custom_path": s("binary_custom_path"),
         "auto_configure_integration": b("auto_configure_integration"),
     }
+
+
+def parse_dns_server(value):
+    """Normalize a DNS server setting into (kind, host, port).
+
+    Plain IP -> udp; https:// URL -> doh; tls://host -> dot. Returns None
+    for empty or unrecognized values.
+    """
+    value = (value or "").strip()
+    if not value:
+        return None
+    if value.startswith("https://"):
+        host = value[len("https://"):].split("/")[0]
+        return {"kind": "doh", "host": host, "port": 443}
+    if value.startswith("tls://"):
+        host = value[len("tls://"):]
+        return {"kind": "dot", "host": host, "port": 853}
+    if all(c.isdigit() or c == "." for c in value) and value.count(".") == 3:
+        return {"kind": "udp", "host": value, "port": 53}
+    return None
 
 
 def disabled_protocols(reader=None):

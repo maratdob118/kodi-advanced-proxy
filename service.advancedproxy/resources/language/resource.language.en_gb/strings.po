@@ -363,3 +363,35 @@ msgstr ""
 msgctxt "#32240"
 msgid "Open subscriptions"
 msgstr ""
+
+msgctxt "#32241"
+msgid "DNS server (IP / https://… / tls://…)"
+msgstr ""
+
+msgctxt "#32242"
+msgid "DNS query strategy"
+msgstr ""
+
+msgctxt "#32243"
+msgid "Default"
+msgstr ""
+
+msgctxt "#32244"
+msgid "Prefer IPv4"
+msgstr ""
+
+msgctxt "#32245"
+msgid "IPv4 only"
+msgstr ""
+
+msgctxt "#32246"
+msgid "Prefer IPv6"
+msgstr ""
+
+msgctxt "#32247"
+msgid "Direct BitTorrent traffic"
+msgstr ""
+
+msgctxt "#32248"
+msgid "IPv6 only"
+msgstr ""
