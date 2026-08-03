@@ -15,7 +15,7 @@ _ENGINE_UNSUPPORTED = {"tuic"}
 
 def _stream(p):
     sec = p.get("security", "none")
-    ss = {"network": "tcp"}
+    ss = {}
     if sec == "reality":
         ss["security"] = "reality"
         ss["realitySettings"] = {
@@ -30,7 +30,7 @@ def _stream(p):
     network = p.get("network", "tcp")
     if network not in ("tcp", ""):
         ss["network"] = network
-        if p.get("path"):
+        if network == "ws" and p.get("path"):
             ss["wsSettings"] = {"path": p["path"]}
     return ss
 
