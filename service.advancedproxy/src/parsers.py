@@ -266,6 +266,237 @@ def is_subscription_url(line):
     return line.startswith("http://") or line.startswith("https://")
 
 
+_NON_PROXY = {
+    # sing-box outbound types that are never profiles
+    "direct", "block", "dns", "selector", "urltest", "cache-file",
+    "shadowtls", "ssh", "tor", "wireguard-client",
+    # Xray outbound protocols that are never profiles
+    "freedom", "blackhole", "dokodemo", "loopback", "tun", "reverse",
+}
+
+
+def _sb_outbound(out):
+    """sing-box outbound (outbounds[].type) -> neutral profile or None."""
+    proto = out.get("type")
+    if proto in _NON_PROXY:
+        return None
+    common = {
+        "protocol": proto,
+        "tag": out.get("tag") or "sing-box",
+        "server": out.get("server", ""),
+        "port": out.get("server_port", 0),
+    }
+    if proto == "vless":
+        common.update({
+            "uuid": out.get("uuid", ""),
+            "flow": out.get("flow", ""),
+            "network": out.get("network", "tcp"),
+            "path": (out.get("transport") or {}).get("path", ""),
+        })
+    elif proto == "vmess":
+        common.update({
+            "uuid": out.get("uuid", ""),
+            "alter_id": out.get("alter_id", 0),
+            "network": out.get("network", "tcp"),
+            "path": (out.get("transport") or {}).get("path", ""),
+        })
+    elif proto == "trojan":
+        common.update({
+            "password": out.get("password", ""),
+            "network": out.get("network", "tcp"),
+            "path": (out.get("transport") or {}).get("path", ""),
+        })
+    elif proto == "shadowsocks":
+        common.update({
+            "method": out.get("method", ""),
+            "password": out.get("password", ""),
+        })
+    elif proto == "hysteria2":
+        common.update({
+            "password": out.get("password", ""),
+            "sni": (out.get("tls") or {}).get("server_name", ""),
+            "fingerprint": (out.get("tls") or {}).get("fingerprint", "chrome"),
+        })
+    elif proto == "wireguard":
+        common.update({
+            "private_key": out.get("private_key", ""),
+            "public_key": (out.get("peer_public_key") or out.get("public_key") or ""),
+            "local_address": out.get("local_address", ""),
+        })
+    elif proto == "tuic":
+        common.update({
+            "uuid": out.get("uuid", ""),
+            "password": out.get("password", ""),
+            "sni": (out.get("tls") or {}).get("server_name", ""),
+            "congestion_control": out.get("congestion_control", ""),
+        })
+    elif proto in ("socks", "http"):
+        common.update({
+            "username": out.get("username", ""),
+            "password": out.get("password", ""),
+        })
+    else:
+        return None
+    tls = out.get("tls") or {}
+    if tls.get("enabled"):
+        common["security"] = "tls"
+        common["sni"] = tls.get("server_name", "")
+        common["fingerprint"] = tls.get("fingerprint", "chrome")
+        reality = tls.get("reality") or {}
+        if reality.get("enabled"):
+            common["security"] = "reality"
+            common["reality_public_key"] = reality.get("public_key", "")
+            common["reality_short_id"] = reality.get("short_id", "")
+    return common
+
+
+def _xray_user(out):
+    """Xray outbound (outbounds[].protocol) -> neutral profile or None."""
+    proto = out.get("protocol")
+    if proto in _NON_PROXY:
+        return None
+    if proto == "hysteria":
+        # Xray hysteria = hysteria2 (QUIC transport, version 2)
+        settings = out.get("settings") or {}
+        stream = out.get("streamSettings") or {}
+        common = {
+            "protocol": "hysteria2",
+            "tag": out.get("tag") or "xray",
+            "server": settings.get("address", ""),
+            "port": settings.get("port", 0),
+            "password": (stream.get("hysteriaSettings") or {}).get("auth", ""),
+            "sni": (stream.get("tlsSettings") or {})
+                   .get("serverName", ""),
+        }
+        return common
+    if proto == "tuic":
+        return None  # Xray has no tuic in any version
+    settings = out.get("settings") or {}
+    stream = out.get("streamSettings") or {}
+    common = {
+        "protocol": proto,
+        "tag": out.get("tag") or "xray",
+        "server": "",
+        "port": 0,
+    }
+    if proto == "vless":
+        vnext = (settings.get("vnext") or [{}])[0]
+        user = (vnext.get("users") or [{}])[0]
+        common.update({
+            "server": vnext.get("address", ""),
+            "port": vnext.get("port", 0),
+            "uuid": user.get("id", ""),
+            "flow": user.get("flow", ""),
+        })
+    elif proto == "vmess":
+        vnext = (settings.get("vnext") or [{}])[0]
+        user = (vnext.get("users") or [{}])[0]
+        common.update({
+            "server": vnext.get("address", ""),
+            "port": vnext.get("port", 0),
+            "uuid": user.get("id", ""),
+            "alter_id": user.get("alterId", 0),
+            "security": user.get("security", "auto"),
+        })
+    elif proto == "trojan":
+        server = (settings.get("servers") or [{}])[0]
+        common.update({
+            "server": server.get("address", ""),
+            "port": server.get("port", 0),
+            "password": server.get("password", ""),
+        })
+    elif proto == "shadowsocks":
+        server = (settings.get("servers") or [{}])[0]
+        common.update({
+            "server": server.get("address", ""),
+            "port": server.get("port", 0),
+            "method": server.get("method", ""),
+            "password": server.get("password", ""),
+        })
+    elif proto == "wireguard":
+        peer = (settings.get("peers") or [{}])[0]
+        common.update({
+            "server": peer.get("endpoint", "").rsplit(":", 1)[0],
+            "port": _int(peer.get("endpoint", "").rsplit(":", 1)[-1]),
+            "private_key": settings.get("secretKey", ""),
+            "public_key": peer.get("publicKey", ""),
+            "local_address": ",".join(settings.get("address", [])),
+        })
+    elif proto in ("socks", "http"):
+        server = (settings.get("servers") or [{}])[0]
+        user = (server.get("users") or [{}])[0]
+        common.update({
+            "server": server.get("address", ""),
+            "port": server.get("port", 0),
+            "username": user.get("user", ""),
+            "password": user.get("pass", ""),
+        })
+    else:
+        return None
+    sec = stream.get("security")
+    if sec in ("tls", "reality"):
+        common["security"] = sec
+        tls = stream.get("tlsSettings") or {}
+        reality = stream.get("realitySettings") or {}
+        common["sni"] = tls.get("serverName") or reality.get("serverName", "")
+        common["fingerprint"] = reality.get("fingerprint", "chrome")
+        if sec == "reality":
+            common["reality_public_key"] = reality.get("publicKey", "")
+            common["reality_short_id"] = reality.get("shortId", "")
+    network = stream.get("network")
+    if network and network != "tcp":
+        common["network"] = network
+        ws = stream.get("wsSettings") or {}
+        if ws.get("path"):
+            common["path"] = ws["path"]
+    return common
+
+
+def parse_config(text):
+    """Extract neutral proxy profiles from a JSON engine config.
+
+    Accepts a sing-box config (outbounds[].type), an Xray config
+    (outbounds[].protocol), a JSON array of full configs, or an already
+    parsed dict/list. Returns (profiles, skipped). Profiles carry
+    protocol/server/port (no uri). Raises ValueError on invalid JSON.
+    """
+    if isinstance(text, (dict, list)):
+        data = text
+    else:
+        try:
+            data = json.loads(text if isinstance(text, str)
+                              else text.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            raise ValueError("config is not valid JSON: %s" % e)
+    documents = data if isinstance(data, list) else [data]
+    profiles, skipped = [], []
+    for doc in documents:
+        if not isinstance(doc, dict):
+            continue
+        outbounds = doc.get("outbounds") or []
+        remarks = doc.get("remarks", "")
+        for out in outbounds:
+            if not isinstance(out, dict):
+                continue
+            if "type" in out:
+                profile = _sb_outbound(out)
+            elif "protocol" in out:
+                if out.get("protocol") == "tuic":
+                    skipped.append((out.get("tag") or "?",
+                                    "xray-unsupported:tuic"))
+                    continue
+                profile = _xray_user(out)
+            else:
+                profile = None
+            if profile is None:
+                skipped.append((out.get("tag") or "?", "non-proxy"))
+                continue
+            if not profile.get("tag") or profile["tag"] in ("sing-box", "xray"):
+                profile["tag"] = remarks or profile["tag"]
+            profiles.append(profile)
+    return profiles, skipped
+
+
 def parse_lines(lines, disabled_protocols=()):
     """Parse many URIs -> (profiles, skipped). skipped = [(line, reason)]."""
     profiles, skipped = [], []

@@ -1387,7 +1387,7 @@ class TestSubscriptionUiContract(unittest.TestCase):
         body = src[start:end]
         self.assertIn("helpers.disabled_protocols()", body,
                       "manual refresh must skip disabled protocols")
-        self.assertIn("parse_links", body)
+        self.assertIn("disabled_protocols=", body)
 
     def test_settings_xml_has_subscriptions_category(self):
         path = os.path.join(HERE, "..", "service.advancedproxy",
@@ -2745,51 +2745,59 @@ class _FakeProfileStore(object):
 
 
 class TestSubscriptionDecode(unittest.TestCase):
-    """decode_subscription: plain text, base64, fallback order, errors."""
+    """decode_subscription: plain text, base64, JSON, fallback order."""
 
     def setUp(self):
         import subscriptions  # noqa: E402
         self.subscriptions = subscriptions
 
     def test_plain_text_with_one_vless_line_decodes(self):
-        lines = self.subscriptions.decode_subscription(VLESS.encode())
-        self.assertEqual(lines, [VLESS])
+        profs, skipped = self.subscriptions.decode_subscription(VLESS.encode())
+        self.assertEqual(skipped, [])
+        self.assertEqual([p["protocol"] for p in profs], ["vless"])
+        self.assertEqual(profs[0]["tag"], "AUTO:VLESS")
+        self.assertEqual(profs[0]["uri"], VLESS)
 
     def test_standard_base64_decodes(self):
         import base64
         body = base64.b64encode((VLESS + "\n" + HY2).encode())
-        lines = self.subscriptions.decode_subscription(body)
-        self.assertEqual(lines, [VLESS, HY2])
+        profs, skipped = self.subscriptions.decode_subscription(body)
+        self.assertEqual(skipped, [])
+        self.assertEqual([p["protocol"] for p in profs],
+                         ["vless", "hysteria2"])
 
     def test_urlsafe_base64_with_newlines_and_no_padding_decodes(self):
         import base64
         body = base64.urlsafe_b64encode((VLESS + "\n" + TROJAN).encode())
         body = body.rstrip(b"=")  # strip padding, URL-safe style
-        lines = self.subscriptions.decode_subscription(body)
-        self.assertEqual(lines, [VLESS, TROJAN])
+        profs, skipped = self.subscriptions.decode_subscription(body)
+        self.assertEqual(skipped, [])
+        self.assertEqual([p["protocol"] for p in profs],
+                         ["vless", "trojan"])
 
     def test_text_body_with_profile_lines_is_used_as_is(self):
-        # A plain-text body with profile lines must decode as text. A true
-        # text-and-base64 dual body cannot exist here: base64's alphabet
-        # excludes ':', which every profile scheme requires.
-        lines = self.subscriptions.decode_subscription((VLESS + "\n").encode())
-        self.assertEqual(lines, [VLESS])
+        profs, skipped = self.subscriptions.decode_subscription(
+            (VLESS + "\n").encode())
+        self.assertEqual([p["protocol"] for p in profs], ["vless"])
 
     def test_text_and_base64_without_links_is_an_error(self):
-        # A body that decodes as text/base64 but yields zero profile lines is
-        # an error, not an empty success (mirrors spec: no usable profiles).
         import base64
         inner = base64.b64encode(b"not-a-profile-line").decode()
-        with self.assertRaises(ValueError):
-            self.subscriptions.decode_subscription(inner.encode())
+        profs, skipped = self.subscriptions.decode_subscription(inner.encode())
+        self.assertEqual(profs, [])
+        self.assertEqual(skipped, [])
 
     def test_garbage_does_not_decode(self):
-        lines = self.subscriptions.decode_subscription(b"\x00\xff\xfe not a sub")
-        self.assertEqual(lines, [])
+        profs, skipped = self.subscriptions.decode_subscription(
+            b"\x00\xff\xfe not a sub")
+        self.assertEqual(profs, [])
+        self.assertEqual(skipped, [])
 
-    def test_zero_profile_lines_is_an_error(self):
-        with self.assertRaises(ValueError):
-            self.subscriptions.decode_subscription(b"just some text, no links")
+    def test_zero_profile_lines_is_empty(self):
+        profs, skipped = self.subscriptions.decode_subscription(
+            b"just some text, no links")
+        self.assertEqual(profs, [])
+        self.assertEqual(skipped, [])
 
 
 class TestSubscriptionStore(unittest.TestCase):
@@ -2836,7 +2844,6 @@ class TestSubscriptionStore(unittest.TestCase):
         added, removed, err = self.store.refresh(
             gid,
             fetch=lambda url: (VLESS + "\n" + TROJAN).encode(),
-            parse=self.subscriptions.parse_links,
             profile_store=self.pstore)
         self.assertIsNone(err)
         self.assertEqual(removed,
@@ -2851,7 +2858,6 @@ class TestSubscriptionStore(unittest.TestCase):
         def boom(url):
             raise IOError("network down")
         added, removed, err = self.store.refresh(gid, fetch=boom,
-                                                 parse=self.subscriptions.parse_links,
                                                  profile_store=self.pstore)
         self.assertIsNotNone(err)
         self.assertEqual(added, [])
@@ -2899,6 +2905,140 @@ class TestEngineVersionContract(unittest.TestCase):
         with open(os.path.join(SRC, "binary_manager.py")) as f:
             src = f.read()
         self.assertIn('XRAY_VERSION = "%s"' % self.EXPECTED_XRAY, src)
+
+
+class TestParseConfig(unittest.TestCase):
+    """parse_config: JSON sing-box/Xray configs -> neutral profiles."""
+
+    def _singbox(self, outbounds, remarks=None):
+        cfg = {"outbounds": outbounds}
+        if remarks:
+            cfg["remarks"] = remarks
+        return cfg
+
+    def _sb_vless(self, tag="sb-vless"):
+        return {"type": "vless", "tag": tag, "server": "h1.example",
+                "server_port": 443, "uuid": "u-1", "network": "tcp",
+                "tls": {"enabled": True, "server_name": "sni1"}}
+
+    def _sb_h2(self, tag="sb-hy2"):
+        return {"type": "hysteria2", "tag": tag, "server": "h2.example",
+                "server_port": 8443, "password": "pw",
+                "tls": {"enabled": True, "server_name": "h2.example"}}
+
+    def _sb_trojan(self, tag="sb-trojan"):
+        return {"type": "trojan", "tag": tag, "server": "h3.example",
+                "server_port": 443, "password": "pw"}
+
+    def test_singbox_config_extracts_proxies_and_skips_non_proxy(self):
+        profs, skipped = parsers.parse_config(self._singbox([
+            self._sb_vless(), self._sb_h2(), self._sb_trojan(),
+            {"type": "direct", "tag": "direct"},
+            {"type": "block", "tag": "block"},
+            {"type": "selector", "tag": "proxy", "outbounds": ["sb-vless"]},
+        ]))
+        self.assertEqual([p["protocol"] for p in profs],
+                         ["vless", "hysteria2", "trojan"])
+        self.assertEqual([p["tag"] for p in profs],
+                         ["sb-vless", "sb-hy2", "sb-trojan"])
+        self.assertEqual(len(skipped), 3)
+
+    def test_singbox_extra_protocols(self):
+        profs, _ = parsers.parse_config(self._singbox([
+            {"type": "vmess", "tag": "v", "server": "h", "server_port": 80,
+             "uuid": "u"},
+            {"type": "shadowsocks", "tag": "s", "server": "h", "server_port": 1,
+             "method": "aes-256-gcm", "password": "p"},
+            {"type": "wireguard", "tag": "w", "server": "h", "server_port": 2,
+             "local_address": "10.0.0.2/32", "private_key": "k"},
+            {"type": "tuic", "tag": "t", "server": "h", "server_port": 3,
+             "uuid": "u", "password": "p"},
+            {"type": "socks", "tag": "x", "server": "h", "server_port": 4},
+            {"type": "http", "tag": "y", "server": "h", "server_port": 5},
+        ]))
+        self.assertEqual([p["protocol"] for p in profs],
+                         ["vmess", "shadowsocks", "wireguard", "tuic",
+                          "socks", "http"])
+
+    def test_xray_config_extracts_proxies(self):
+        cfg = {"outbounds": [
+            {"tag": "x-vless", "protocol": "vless",
+             "settings": {"vnext": [{"address": "h1", "port": 443,
+                                     "users": [{"id": "u-1"}]}]}},
+            {"tag": "x-hy2", "protocol": "hysteria",
+             "settings": {"address": "h2", "port": 8443},
+             "streamSettings": {"network": "hysteria",
+                                "security": "tls",
+                                "tlsSettings": {"serverName": "h2"},
+                                "hysteriaSettings": {"auth": "x-hy2-auth"}}},
+            {"tag": "direct", "protocol": "freedom"},
+        ]}
+        profs, skipped = parsers.parse_config(cfg)
+        self.assertEqual([p["protocol"] for p in profs],
+                         ["vless", "hysteria2"])
+        self.assertEqual(profs[1]["password"], "x-hy2-auth")
+        self.assertEqual(len(skipped), 1)
+
+    def test_xray_skips_tuic(self):
+        cfg = {"outbounds": [
+            {"tag": "t", "protocol": "tuic",
+             "settings": {"address": "h", "port": 443}},
+        ]}
+        profs, skipped = parsers.parse_config(cfg)
+        self.assertEqual(profs, [])
+        self.assertTrue(any("tuic" in reason for _, reason in skipped))
+
+    def test_array_of_configs_uses_remarks_fallback(self):
+        docs = [self._singbox([self._sb_vless(tag="o1")], remarks="Location A"),
+                self._singbox([self._sb_h2(tag="o2")], remarks="Location B")]
+        profs, _ = parsers.parse_config(docs)
+        self.assertEqual([p["tag"] for p in profs], ["o1", "o2"])
+
+    def test_array_element_without_tag_uses_remarks(self):
+        docs = [self._singbox([self._sb_vless(tag="")], remarks="Loc A")]
+        profs, _ = parsers.parse_config(docs)
+        self.assertEqual(profs[0]["tag"], "Loc A")
+
+    def test_bigping_shape_extracts_three_proxies(self):
+        docs = [
+            {"remarks": "🇷🇺 Россия",
+             "outbounds": [self._sb_vless(), self._sb_h2(), self._sb_trojan(),
+                           {"type": "block", "tag": "block"}]},
+            {"remarks": "🇫🇮 Финляндия",
+             "outbounds": [self._sb_vless(tag="fi-vless"),
+                           {"type": "block", "tag": "block"}]},
+        ]
+        profs, skipped = parsers.parse_config(docs)
+        self.assertEqual([p["protocol"] for p in profs],
+                         ["vless", "hysteria2", "trojan", "vless"])
+        self.assertEqual(len(skipped), 2)
+
+    def test_invalid_json_raises(self):
+        with self.assertRaises(ValueError):
+            parsers.parse_config("{not json")
+
+    def test_config_without_proxy_outbounds(self):
+        profs, skipped = parsers.parse_config(self._singbox([
+            {"type": "direct", "tag": "d"},
+            {"type": "block", "tag": "b"},
+        ]))
+        self.assertEqual(profs, [])
+        self.assertEqual(len(skipped), 2)
+
+    def test_decode_subscription_json_branch(self):
+        import subscriptions
+        body = json.dumps([self._singbox([self._sb_vless(), self._sb_h2()])])
+        profs, skipped = subscriptions.decode_subscription(body.encode())
+        self.assertEqual([p["protocol"] for p in profs], ["vless", "hysteria2"])
+        self.assertEqual(skipped, [])
+
+    def test_decode_subscription_json_base64(self):
+        import base64
+        import subscriptions
+        body = json.dumps(self._singbox([self._sb_vless()]))
+        wrapped = base64.b64encode(body.encode())
+        profs, skipped = subscriptions.decode_subscription(wrapped)
+        self.assertEqual([p["protocol"] for p in profs], ["vless"])
 
 
 if __name__ == "__main__":

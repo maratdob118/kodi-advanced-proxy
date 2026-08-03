@@ -274,12 +274,10 @@ def _action_sub_add(handle, url):
 
 
 def _action_sub_refresh(handle, group_id):
-    import subscriptions
     sub_store = _subscription_store()
     _, _, err = sub_store.refresh(
         group_id,
-        parse=lambda links: subscriptions.parse_links(
-            links, helpers.disabled_protocols()),
+        disabled_protocols=helpers.disabled_protocols(),
         profile_store=_store())
     if err:
         _notify(_ls(32229), error=True)

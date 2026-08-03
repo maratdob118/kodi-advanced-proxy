@@ -308,8 +308,7 @@ class ProxySupervisor(object):
         for group in store.due(now, interval_hours):
             added, removed, err = store.refresh(
                 group["id"],
-                parse=lambda links: subscriptions.parse_links(
-                    links, helpers.disabled_protocols()),
+                disabled_protocols=helpers.disabled_protocols(),
                 profile_store=self.store)
             if err:
                 self.log("subscription %s refresh failed: %s"

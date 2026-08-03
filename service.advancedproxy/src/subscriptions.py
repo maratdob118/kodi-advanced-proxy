@@ -21,30 +21,33 @@ import parsers
 MAX_BYTES = 1 << 20  # refuse subscription bodies larger than 1 MiB
 
 
-def decode_subscription(body, max_bytes=MAX_BYTES):
-    """Decode BODY into a list of profile link lines.
+def decode_subscription(body, max_bytes=MAX_BYTES, disabled_protocols=()):
+    """Decode BODY into (profiles, skipped).
 
     Plain text wins when it contains at least one profile-scheme line;
-    otherwise base64 (standard, then URL-safe, padding optional) is tried.
-    Returns the list of link lines. Raises ValueError when the body is too
-    large, or when it decoded as text/base64 but holds no profile links.
+    otherwise base64 (standard, then URL-safe, padding optional) is tried;
+    otherwise the body is parsed as JSON (a single config or an array of
+    configs) via parsers.parse_config. Returns (profiles, skipped).
     """
     if body is None or len(body) > max_bytes:
         raise ValueError("subscription body missing or larger than %d bytes"
                          % max_bytes)
     text = _decode_text(body)
     if text is not None:
-        return text
+        return parse_links(text, disabled_protocols)
     decoded = _decode_base64(body)
     if decoded is not None:
         text = _decode_text(decoded)
         if text is not None:
-            return text
+            return parse_links(text, disabled_protocols)
+        try:
+            return parsers.parse_config(decoded)
+        except ValueError:
+            pass
     try:
-        body.decode("utf-8")
-        raise ValueError("subscription body contains no profile links")
-    except UnicodeDecodeError:
-        return []
+        return parsers.parse_config(body)
+    except ValueError:
+        return [], []
 
 
 def _decode_text(body):
@@ -159,7 +162,8 @@ class SubscriptionStore(object):
         return None
 
     # ----- mutations -------------------------------------------------
-    def add(self, url, fetcher=fetch, profile_store=None):
+    def add(self, url, fetcher=fetch, profile_store=None,
+            disabled_protocols=()):
         """Fetch URL once, create a group and add its profiles.
 
         Returns (group, error). On failure no group is persisted and the
@@ -167,12 +171,12 @@ class SubscriptionStore(object):
         """
         try:
             body = fetcher(url)
-            links = decode_subscription(body)
+            parsed, _ = decode_subscription(body,
+                                            disabled_protocols=disabled_protocols)
         except Exception as e:
             return None, str(e)
-        if not links:
+        if not parsed:
             return None, "subscription contains no usable profiles"
-        parsed, _ = parse_links(links)
         group = {"id": _group_id(url), "url": url,
                  "last_updated": self.now(), "last_error": None}
         if profile_store is not None:
@@ -191,8 +195,8 @@ class SubscriptionStore(object):
             profile_store.remove_by_subscription(group_id)
         self.save()
 
-    def refresh(self, group_id, fetch=fetch, parse=parse_links,
-                profile_store=None):
+    def refresh(self, group_id, fetch=fetch, profile_store=None,
+                disabled_protocols=()):
         """Mirror-sync one group against its URL.
 
         Returns (added, removed, error). On fetch/decode failure the profiles
@@ -203,12 +207,12 @@ class SubscriptionStore(object):
             return [], [], "no such subscription"
         try:
             body = fetch(group["url"])
-            links = decode_subscription(body)
+            parsed, _ = decode_subscription(body,
+                                            disabled_protocols=disabled_protocols)
         except Exception as e:
             group["last_error"] = str(e)
             self.save()
             return [], [], str(e)
-        parsed, _ = parse(links)
         added, removed = [], []
         if profile_store is not None:
             if hasattr(profile_store, "sync_subscription"):
