@@ -598,6 +598,18 @@ class TestBuildSingbox(unittest.TestCase):
         self.assertFalse(any(r.get("protocol") == "bittorrent"
                              for r in cfg["route"]["rules"]))
 
+    def test_geoip_rule_absent_singbox_uses_rule_sets_only(self):
+        # sing-box 1.12+ removed embedded geoip.dat/geosite.dat: external
+        # geo databases apply to Xray only, never to sing-box routing.
+        profs, _ = parsers.parse_lines([VLESS])
+        for extra in ({"geoip_url": "https://a/geoip.dat"},
+                      {"geosite_url": "https://b/geosite.dat"}):
+            cfg, _ = build_singbox.build_config(
+                profs, self._settings(**extra))
+            self.assertFalse(any(r.get("geoip") or r.get("geosite")
+                                 for r in cfg["route"]["rules"]),
+                             "sing-box must not emit geoip/geosite rules")
+
     def test_skip_xhttp(self):
         profs, _ = parsers.parse_lines([VLESS, XHTTP])
         cfg, skipped = build_singbox.build_config(profs, self._settings())
@@ -798,6 +810,32 @@ class TestBuildXray(unittest.TestCase):
         self.assertFalse(any(r.get("protocol") == ["bittorrent"]
                              for r in cfg["routing"]["rules"]))
 
+    def test_geoip_rule_when_url_set(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(
+            profs, self._settings(geoip_url="https://a/geoip.dat"))
+        geo = [r for r in cfg["routing"]["rules"]
+               if r.get("ip") == ["geoip:ru-blocked"]]
+        self.assertEqual(len(geo), 1)
+        self.assertEqual(geo[0]["outboundTag"], "direct")
+
+    def test_geosite_rule_when_url_set(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(
+            profs, self._settings(geosite_url="https://b/geosite.dat"))
+        geo = [r for r in cfg["routing"]["rules"]
+               if r.get("domain") == ["geosite:ru-blocked"]]
+        self.assertEqual(len(geo), 1)
+        self.assertEqual(geo[0]["outboundTag"], "direct")
+
+    def test_geo_rules_absent_by_default(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(profs, self._settings())
+        self.assertFalse(any(r.get("ip") == ["geoip:ru-blocked"]
+                             for r in cfg["routing"]["rules"]))
+        self.assertFalse(any(r.get("domain") == ["geosite:ru-blocked"]
+                             for r in cfg["routing"]["rules"]))
+
 
 class TestHelpers(unittest.TestCase):
     def test_defaults(self):
@@ -907,6 +945,49 @@ class TestHelpers(unittest.TestCase):
             self.assertEqual(s["dns_query_strategy"], expected,
                              "strategy %s must map to %r" % (raw_value,
                                                               expected))
+
+    def test_geo_settings_defaults(self):
+        s = helpers.get_settings(reader=lambda: {})
+        self.assertEqual(
+            s["geoip_url"],
+            "https://github.com/runetfreedom/russia-blocked-geoip/"
+            "releases/latest/download/geoip.dat")
+        self.assertEqual(s["geosite_url"], "")
+
+    def test_geo_settings_normalized(self):
+        raw = {"geoip_url": "https://example.com/geoip.dat",
+               "geosite_url": "https://example.com/geosite.dat"}
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["geoip_url"], "https://example.com/geoip.dat")
+        self.assertEqual(s["geosite_url"], "https://example.com/geosite.dat")
+
+    def test_geo_databases_paths_under_profile_dir(self):
+        p = helpers.geo_databases_path()
+        self.assertTrue(p["geoip"].endswith("geoip.dat"))
+        self.assertTrue(p["geosite"].endswith("geosite.dat"))
+
+    def test_sync_geo_databases_downloads_both(self):
+        fetches = {}
+
+        def fake_fetch(url):
+            fetches[url] = True
+            return b"geo-data"
+
+        status = helpers.sync_geo_databases(
+            {"geoip_url": "https://a/geoip.dat",
+             "geosite_url": "https://b/geosite.dat"},
+            fetch=fake_fetch)
+        self.assertEqual(status["geoip"], "ok")
+        self.assertEqual(status["geosite"], "ok")
+        self.assertEqual(len(fetches), 2)
+
+    def test_sync_geo_databases_empty_urls_skip(self):
+        status = helpers.sync_geo_databases(
+            {"geoip_url": "", "geosite_url": ""},
+            fetch=lambda url: (_ for _ in ()).throw(
+                AssertionError("must not fetch")))
+        self.assertEqual(status["geoip"], "skipped")
+        self.assertEqual(status["geosite"], "skipped")
 
     def test_pick_reachable_returns_preferred_when_reachable(self):
         profs = [

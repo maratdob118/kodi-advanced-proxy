@@ -104,3 +104,9 @@ Keep the Kodi-free module split. `parsers.py` gains `parse_config` (JSON sing-bo
 - [ ] RED: packaging contract tests assert `build.sh` extracts `geoip.dat` and `geosite.dat` next to the xray binary for Xray platforms, and `verify_zip.sh` requires them; `binary_manager` copies them into the work dir beside the engine when xray is installed (both from the bundle and after a download).
 - [ ] GREEN: extend `fetch_xray` in `build.sh` to extract geoip.dat/geosite.dat; extend `scripts/verify_zip.sh` to require them for Xray platforms; extend `binary_manager._sync_from_bundle`/`_download_binary` to copy the two geo files next to `work_binary`.
 - [ ] Run focused packaging/binary-manager tests (GREEN evidence), then full suite.
+
+## Task 8c: Geo databases (minimal, no categories) (RED → GREEN)
+
+- [ ] RED: settings contract gains `geoip_url` (default https://github.com/runetfreedom/russia-blocked-geoip/releases/latest/download/geoip.dat) and `geosite_url` (default empty). `helpers.geo_databases_path()` returns profile-dir paths. A `sync_geo_databases(fetch)` helper downloads both to profile dir (size-capped, injectable fetch) and reports per-file status. Builders add `geoip:ru-blocked -> direct` (sing-box geoip rule / Xray ip rule) and `geosite:ru-blocked -> direct` (sing-box geosite / Xray domain) only when the corresponding URL is set; absent-by-default otherwise.
+- [ ] GREEN: implement settings, paths, sync helper, and builder rules.
+- [ ] Run focused tests (GREEN evidence), then full suite.

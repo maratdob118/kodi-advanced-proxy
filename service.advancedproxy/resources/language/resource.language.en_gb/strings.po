@@ -395,3 +395,11 @@ msgstr ""
 msgctxt "#32248"
 msgid "IPv6 only"
 msgstr ""
+
+msgctxt "#32249"
+msgid "GeoIP database URL (ru-blocked -> direct)"
+msgstr ""
+
+msgctxt "#32250"
+msgid "GeoSite database URL (ru-blocked -> direct)"
+msgstr ""

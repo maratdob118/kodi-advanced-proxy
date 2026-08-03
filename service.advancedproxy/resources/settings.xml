@@ -232,6 +232,26 @@
                     <default>false</default>
                     <control type="toggle"/>
                 </setting>
+                <setting id="geoip_url" type="string" label="32249" help="32249">
+                    <level>0</level>
+                    <default>https://github.com/runetfreedom/russia-blocked-geoip/releases/latest/download/geoip.dat</default>
+                    <constraints>
+                        <allowempty>true</allowempty>
+                    </constraints>
+                    <control type="edit" format="string">
+                        <heading>32249</heading>
+                    </control>
+                </setting>
+                <setting id="geosite_url" type="string" label="32250" help="32250">
+                    <level>0</level>
+                    <default></default>
+                    <constraints>
+                        <allowempty>true</allowempty>
+                    </constraints>
+                    <control type="edit" format="string">
+                        <heading>32250</heading>
+                    </control>
+                </setting>
             </group>
 
             <group id="2" label="32235">

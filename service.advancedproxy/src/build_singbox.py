@@ -243,6 +243,8 @@ def build_config(profiles, settings, active_tag=None):
         {"action": "sniff"},
         {"protocol": "dns", "action": "hijack-dns"},
     ]
+    # sing-box 1.12+ dropped embedded geoip.dat/geosite.dat, so geoip rules
+    # cannot reference external databases; geo databases are Xray-only.
     if settings.get("direct_torrent"):
         rules.append({"protocol": "bittorrent", "action": "route",
                       "outbound": "direct"})

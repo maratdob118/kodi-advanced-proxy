@@ -166,6 +166,14 @@ def main():
     integration = IntegrationLifecycle(
         build_integration_manager(_xbmc_log, _notify), _xbmc_log, _notify)
 
+    geo_status = helpers.sync_geo_databases(settings)
+    for name, status in geo_status.items():
+        if status == "ok":
+            _xbmc_log("geo %s database updated" % name)
+        elif status != "skipped":
+            _xbmc_log("geo %s database update failed: %s" % (name, status),
+                      "warn")
+
     def _sync_integration(current, running):
         integration.sync(current.get("auto_configure_integration", True),
                          running,
