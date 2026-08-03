@@ -781,6 +781,8 @@ class TestBuildXray(unittest.TestCase):
               if r.get("protocol") == ["bittorrent"]]
         self.assertEqual(len(bt), 1)
         self.assertEqual(bt[0]["outboundTag"], "direct")
+        self.assertIs(cfg["routing"]["rules"][0], bt[0],
+                      "bittorrent rule must be the first routing rule")
 
     def test_torrent_direct_rule_absent_by_default(self):
         profs, _ = parsers.parse_lines([VLESS])
@@ -887,6 +889,16 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(s["dns_server"], "tls://1.1.1.1")
         self.assertEqual(s["dns_query_strategy"], "prefer_ipv4")
         self.assertIs(s["direct_torrent"], True)
+
+    def test_dns_strategy_integer_mapping(self):
+        for raw_value, expected in (("0", ""), ("1", "prefer_ipv4"),
+                                    ("2", "ipv4_only"), ("3", "prefer_ipv6"),
+                                    ("4", "ipv6_only")):
+            s = helpers.get_settings(reader=lambda: {
+                "dns_query_strategy": raw_value})
+            self.assertEqual(s["dns_query_strategy"], expected,
+                             "strategy %s must map to %r" % (raw_value,
+                                                              expected))
 
     def test_pick_reachable_returns_preferred_when_reachable(self):
         profs = [
