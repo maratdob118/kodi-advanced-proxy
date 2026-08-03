@@ -201,6 +201,97 @@ class TestParsers(unittest.TestCase):
     def test_is_subscription_url_false_for_junk(self):
         self.assertFalse(parsers.is_subscription_url("not a url at all"))
 
+    def test_vmess_modern_form(self):
+        p = parsers.parse_uri(
+            "vmess://uuid-1111@h.example:443?security=auto&type=tcp#VM:T1")
+        self.assertEqual(p["protocol"], "vmess")
+        self.assertEqual(p["tag"], "VM:T1")
+        self.assertEqual(p["server"], "h.example")
+        self.assertEqual(p["port"], 443)
+        self.assertEqual(p["uuid"], "uuid-1111")
+
+    def test_vmess_base64_json_form(self):
+        import base64, json
+        payload = json.dumps({
+            "v": "2", "ps": "VM:B64", "add": "h2.example", "port": 8443,
+            "id": "uuid-2222", "aid": 2, "net": "ws", "path": "/ws",
+            "scy": "auto", "sni": "h2.example",
+        }).encode()
+        uri = "vmess://%s" % base64.b64encode(payload).decode()
+        p = parsers.parse_uri(uri)
+        self.assertEqual(p["protocol"], "vmess")
+        self.assertEqual(p["tag"], "VM:B64")
+        self.assertEqual(p["server"], "h2.example")
+        self.assertEqual(p["port"], 8443)
+        self.assertEqual(p["uuid"], "uuid-2222")
+        self.assertEqual(p["alter_id"], 2)
+        self.assertEqual(p["network"], "ws")
+        self.assertEqual(p["path"], "/ws")
+
+    def test_shadowsocks_plain_form(self):
+        p = parsers.parse_uri("ss://chacha20-ietf-poly1305:pass@h.example:8388#SS:1")
+        self.assertEqual(p["protocol"], "shadowsocks")
+        self.assertEqual(p["tag"], "SS:1")
+        self.assertEqual(p["method"], "chacha20-ietf-poly1305")
+        self.assertEqual(p["password"], "pass")
+        self.assertEqual(p["port"], 8388)
+
+    def test_shadowsocks_base64_form(self):
+        import base64
+        auth = base64.b64encode(b"aes-256-gcm:pw").decode()
+        p = parsers.parse_uri("ss://%s@h.example:8388#SS:2" % auth)
+        self.assertEqual(p["protocol"], "shadowsocks")
+        self.assertEqual(p["method"], "aes-256-gcm")
+        self.assertEqual(p["password"], "pw")
+
+    def test_socks(self):
+        p = parsers.parse_uri("socks://user:pass@h.example:1080#SOCKS:1")
+        self.assertEqual(p["protocol"], "socks")
+        self.assertEqual(p["username"], "user")
+        self.assertEqual(p["password"], "pass")
+
+    def test_http(self):
+        p = parsers.parse_uri("http://user:pass@h.example:8080#HTTP:1")
+        self.assertEqual(p["protocol"], "http")
+        self.assertEqual(p["username"], "user")
+        self.assertEqual(p["password"], "pass")
+
+    def test_wireguard(self):
+        p = parsers.parse_uri(
+            "wireguard://privatekey123@h.example:51820"
+            "?pk=peerpubkey456&local_address=10.0.0.2/32#WG:1")
+        self.assertEqual(p["protocol"], "wireguard")
+        self.assertEqual(p["private_key"], "privatekey123")
+        self.assertEqual(p["public_key"], "peerpubkey456")
+        self.assertEqual(p["local_address"], "10.0.0.2/32")
+
+    def test_tuic(self):
+        p = parsers.parse_uri(
+            "tuic://uuid-3333@h.example:443?password=pw&congestion_control=bbr"
+            "&sni=h.example#TUIC:1")
+        self.assertEqual(p["protocol"], "tuic")
+        self.assertEqual(p["uuid"], "uuid-3333")
+        self.assertEqual(p["password"], "pw")
+        self.assertEqual(p["congestion_control"], "bbr")
+        self.assertEqual(p["sni"], "h.example")
+
+    def test_legacy_schemes_skipped(self):
+        profs, skipped = parsers.parse_lines(
+            ["ssr://base64stuff", "shadowtls://x@h:443", "naive://u@h:443"])
+        self.assertEqual(profs, [])
+        self.assertEqual(len(skipped), 3)
+
+    def test_disabled_protocols_new_schemes(self):
+        for uri, proto in (
+                ("vmess://u@h:443#T", "vmess"),
+                ("ss://aes-256-gcm:p@h:8388#T", "shadowsocks"),
+                ("socks://h:1080#T", "socks"),
+                ("http://h:8080#T", "http"),
+                ("wireguard://k@h:51820#T", "wireguard"),
+                ("tuic://u@h:443#T", "tuic")):
+            self.assertIsNone(parsers.parse_uri(uri, disabled_protocols=(proto,)),
+                              "%s must be filterable" % proto)
+
 
 class TestProfileStore(unittest.TestCase):
     def setUp(self):
