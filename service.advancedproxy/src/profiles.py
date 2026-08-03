@@ -19,7 +19,13 @@ def _identity(profile):
     uri = profile.get("uri")
     if uri:
         return uri
-    return (profile.get("protocol"), profile.get("server"), profile.get("port"))
+    return _endpoint(profile)
+
+
+def _endpoint(profile):
+    """(protocol, server, port) — the shared endpoint of any profile."""
+    return (profile.get("protocol"), profile.get("server"),
+            profile.get("port"))
 
 
 class ProfileStore(object):
@@ -96,10 +102,12 @@ class ProfileStore(object):
         """
         existing = {_identity(p) for p in self.profiles
                     if p.get("subscription") is None}
+        manual_endpoints = {_endpoint(p) for p in self.profiles
+                            if p.get("subscription") is None}
         added = 0
         for p in parsed:
             identity = _identity(p)
-            if identity in existing:
+            if identity in existing or _endpoint(p) in manual_endpoints:
                 continue
             p["enabled"] = True
             p["subscription"] = group_id
@@ -139,6 +147,8 @@ class ProfileStore(object):
         added = []
         manual = {_identity(p) for p in self.profiles
                   if p.get("subscription") is None}
+        manual_endpoints = {_endpoint(p) for p in self.profiles
+                            if p.get("subscription") is None}
         for p in parsed:
             identity = _identity(p)
             if identity in current_by_id:
@@ -146,7 +156,7 @@ class ProfileStore(object):
                 current_by_id[identity]["server"] = p["server"]
                 current_by_id[identity]["port"] = p["port"]
                 continue
-            if identity in manual:
+            if identity in manual or _endpoint(p) in manual_endpoints:
                 continue
             p["enabled"] = True
             p["subscription"] = group_id

@@ -405,6 +405,44 @@ class TestProfileStore(unittest.TestCase):
         self.assertEqual(added, ["AUTO:Hysteria2"])
         self.assertEqual(removed, [])
 
+    def test_config_profiles_same_endpoint_dedup(self):
+        parsed = [
+            {"protocol": "vless", "tag": "cfg-a", "server": "h",
+             "port": 443, "uuid": "u"},
+            {"protocol": "vless", "tag": "cfg-b", "server": "h",
+             "port": 443, "uuid": "u"},
+        ]
+        n = self.store.add_subscription_profiles(parsed, "sub-cfg")
+        self.assertEqual(n, 1, "same endpoint must dedup config profiles")
+        self.assertEqual(len(self.store.profiles), 1)
+
+    def test_config_profile_loses_to_manual_same_endpoint(self):
+        parsed, _ = parsers.parse_lines([VLESS])
+        self.store.add_uri(parsed[0].get("uri") or VLESS)  # manual
+        cfg = [{"protocol": "vless", "tag": "cfg", "server":
+                parsers.parse_uri(VLESS)["server"],
+                "port": parsers.parse_uri(VLESS)["port"], "uuid": "u"}]
+        n = self.store.add_subscription_profiles(cfg, "sub-cfg")
+        self.assertEqual(n, 0, "manual profile must win over config copy")
+        self.assertEqual(len(self.store.profiles), 1)
+        self.assertIsNone(self.store.profiles[0].get("subscription"))
+
+    def test_sync_keeps_enabled_for_config_profiles(self):
+        parsed = [
+            {"protocol": "vless", "tag": "c1", "server": "h1",
+             "port": 443, "uuid": "u1"},
+            {"protocol": "hysteria2", "tag": "c2", "server": "h2",
+             "port": 8443, "password": "p"},
+        ]
+        self.store.add_subscription_profiles(parsed, "sub-cfg")
+        self.store.toggle("c1")
+        kept = [{"protocol": "vless", "tag": "c1", "server": "h1",
+                 "port": 443, "uuid": "u1"}]
+        added, removed = self.store.sync_subscription(kept, "sub-cfg")
+        self.assertEqual(removed, ["c2"])
+        self.assertFalse(self.store.get("c1")["enabled"],
+                         "sync must keep enabled flag for config profiles")
+
 
 class TestBuildSingbox(unittest.TestCase):
     def _settings(self, **kw):
@@ -2648,9 +2686,9 @@ class TestSupervisorTick(unittest.TestCase):
     def test_refresh_removing_active_reconfigures_in_manual_mode(self):
         self.sup.settings["subscription_interval_hours"] = 24
         self._started()
-        parsed, _ = parsers.parse_lines([HY2])
+        parsed, _ = parsers.parse_lines([TROJAN])
         self.sup.store.add_subscription_profiles(parsed, "sub-x")
-        self.sup.store.set_active("AUTO:Hysteria2")
+        self.sup.store.set_active("AUTO:Trojan")
         self.sup._make_binary_manager = lambda: _FakeBin("new", self.calls)
         self.sup.refresh_subscriptions = lambda now, interval: (
             self.sup.store.remove_by_subscription("sub-x") or True)
@@ -2710,15 +2748,27 @@ class _FakeProfileStore(object):
             return uri
         return (p.get("protocol"), p.get("server"), p.get("port"))
 
+    @staticmethod
+    def _endpoint(p):
+        return (p.get("protocol"), p.get("server"), p.get("port"))
+
     def tags(self):
         return [p["tag"] for p in self.profiles]
 
     def add_subscription_profiles(self, parsed, group_id):
+        manual = [p for p in self.profiles if p.get("subscription") is None]
+        manual_ids = {self._identity(p) for p in manual}
+        manual_endpoints = {self._endpoint(p) for p in manual}
+        added = 0
         for p in parsed:
+            if self._identity(p) in manual_ids or \
+                    self._endpoint(p) in manual_endpoints:
+                continue
             p["subscription"] = group_id
             self.profiles.append(p)
             self.added.append(p["tag"])
-        return len(parsed)
+            added += 1
+        return added
 
     def sync_subscription(self, parsed, group_id):
         """Mirror sync: add new profiles, remove disappeared ones."""
