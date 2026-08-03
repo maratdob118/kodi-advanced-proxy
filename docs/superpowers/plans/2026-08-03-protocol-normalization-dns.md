@@ -98,3 +98,9 @@ Keep the Kodi-free module split. `parsers.py` gains `parse_config` (JSON sing-bo
 - [ ] `./build.sh` produces all platforms + universal with sing-box 1.13.15 and Xray 26.7.28; `verify_zip.sh` OK.
 - [ ] Local bigping-subscription integration passes (JSON config extraction + mirror sync + engine check).
 - [ ] Live QA on 192.168.31.174 passes (subscription add/refresh/delete, protocols from config, activation).
+
+## Task 8a: Xray geo files (RED → GREEN)
+
+- [ ] RED: packaging contract tests assert `build.sh` extracts `geoip.dat` and `geosite.dat` next to the xray binary for Xray platforms, and `verify_zip.sh` requires them; `binary_manager` copies them into the work dir beside the engine when xray is installed (both from the bundle and after a download).
+- [ ] GREEN: extend `fetch_xray` in `build.sh` to extract geoip.dat/geosite.dat; extend `scripts/verify_zip.sh` to require them for Xray platforms; extend `binary_manager._sync_from_bundle`/`_download_binary` to copy the two geo files next to `work_binary`.
+- [ ] Run focused packaging/binary-manager tests (GREEN evidence), then full suite.
