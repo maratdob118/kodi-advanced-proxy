@@ -2257,5 +2257,187 @@ class TestSupervisorTick(unittest.TestCase):
         self.assertTrue(self.sup.bin.is_running())
 
 
+class _FakeProfileStore(object):
+    """ProfileStore stand-in for SubscriptionStore cascade tests."""
+
+    def __init__(self):
+        self.profiles = []
+        self.active_tag = None
+        self.added = []
+        self.removed = []
+
+    def tags(self):
+        return [p["tag"] for p in self.profiles]
+
+    def add_subscription_profiles(self, parsed, group_id):
+        for p in parsed:
+            p["subscription"] = group_id
+            self.profiles.append(p)
+            self.added.append(p["tag"])
+        return len(parsed)
+
+    def sync_subscription(self, parsed, group_id):
+        """Mirror sync: add new links, remove disappeared ones."""
+        current = [p for p in self.profiles
+                   if p.get("subscription") == group_id]
+        current_by_uri = {p["uri"]: p for p in current}
+        new_by_uri = {p["uri"]: p for p in parsed}
+        removed = [p["tag"] for uri, p in current_by_uri.items()
+                   if uri not in new_by_uri]
+        added = []
+        for p in parsed:
+            if p["uri"] not in current_by_uri:
+                p["subscription"] = group_id
+                self.profiles.append(p)
+                added.append(p["tag"])
+        self.removed = removed
+        self.added = added
+        if self.active_tag not in [p["tag"] for p in self.profiles]:
+            self.active_tag = (self.profiles[0]["tag"] if self.profiles
+                               else None)
+        return added, removed
+
+    def remove_by_subscription(self, group_id):
+        kept = [p for p in self.profiles if p.get("subscription") != group_id]
+        self.removed = [p["tag"] for p in self.profiles
+                        if p.get("subscription") == group_id]
+        self.profiles = kept
+        if self.active_tag not in [p["tag"] for p in kept]:
+            self.active_tag = kept[0]["tag"] if kept else None
+        return self.removed
+
+
+class TestSubscriptionDecode(unittest.TestCase):
+    """decode_subscription: plain text, base64, fallback order, errors."""
+
+    def setUp(self):
+        import subscriptions  # noqa: E402
+        self.subscriptions = subscriptions
+
+    def test_plain_text_with_one_vless_line_decodes(self):
+        lines = self.subscriptions.decode_subscription(VLESS.encode())
+        self.assertEqual(lines, [VLESS])
+
+    def test_standard_base64_decodes(self):
+        import base64
+        body = base64.b64encode((VLESS + "\n" + HY2).encode())
+        lines = self.subscriptions.decode_subscription(body)
+        self.assertEqual(lines, [VLESS, HY2])
+
+    def test_urlsafe_base64_with_newlines_and_no_padding_decodes(self):
+        import base64
+        body = base64.urlsafe_b64encode((VLESS + "\n" + TROJAN).encode())
+        body = body.rstrip(b"=")  # strip padding, URL-safe style
+        lines = self.subscriptions.decode_subscription(body)
+        self.assertEqual(lines, [VLESS, TROJAN])
+
+    def test_text_wins_when_body_is_both_text_and_base64(self):
+        # Plain text with profile lines is taken as-is even when the body is
+        # also valid base64: text is tried first, so decoding must not fail.
+        import base64
+        text_body = (VLESS + "\n").encode()
+        # VLESS is not valid base64, so a plain-text body with profile lines
+        # must be returned as text, never rejected as bad base64.
+        lines = self.subscriptions.decode_subscription(text_body)
+        self.assertEqual(lines, [VLESS])
+
+    def test_text_and_base64_without_links_is_an_error(self):
+        # A body that decodes as text/base64 but yields zero profile lines is
+        # an error, not an empty success (mirrors spec: no usable profiles).
+        import base64
+        inner = base64.b64encode(b"not-a-profile-line").decode()
+        with self.assertRaises(ValueError):
+            self.subscriptions.decode_subscription(inner.encode())
+
+    def test_garbage_does_not_decode(self):
+        lines = self.subscriptions.decode_subscription(b"\x00\xff\xfe not a sub")
+        self.assertEqual(lines, [])
+
+    def test_zero_profile_lines_is_an_error(self):
+        with self.assertRaises(ValueError):
+            self.subscriptions.decode_subscription(b"just some text, no links")
+
+
+class TestSubscriptionStore(unittest.TestCase):
+    """SubscriptionStore: add/remove/refresh/due with injectable deps."""
+
+    def setUp(self):
+        import subscriptions  # noqa: E402
+        self.subscriptions = subscriptions
+        self.tmp = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmp, "subscriptions.json")
+        self.store = self.subscriptions.SubscriptionStore(
+            self.path, now=lambda: 1000.0)
+        self.pstore = _FakeProfileStore()
+
+    def test_add_records_group_and_adds_profiles(self):
+        group, err = self.store.add(
+            "https://example.com/sub", fetcher=lambda url: (VLESS + "\n" + HY2).encode(),
+            profile_store=self.pstore)
+        self.assertIsNone(err)
+        self.assertIsNotNone(group["id"])
+        self.assertEqual(group["url"], "https://example.com/sub")
+        self.assertEqual(self.pstore.added,
+                         [parsers.parse_uri(VLESS)["tag"],
+                          parsers.parse_uri(HY2)["tag"]])
+        groups = self.store.groups()
+        self.assertEqual(len(groups), 1)
+
+    def test_remove_cascades_to_profile_store(self):
+        self.store.add("https://example.com/sub",
+                       fetcher=lambda url: VLESS.encode(),
+                       profile_store=self.pstore)
+        gid = self.store.groups()[0]["id"]
+        self.store.remove(gid, self.pstore)
+        self.assertEqual(self.pstore.removed,
+                         [parsers.parse_uri(VLESS)["tag"]])
+        self.assertEqual(self.store.groups(), [])
+
+    def test_refresh_mirror_sync_adds_and_removes(self):
+        group, _ = self.store.add("https://example.com/sub",
+                                  fetcher=lambda url: (VLESS + "\n" + HY2).encode(),
+                                  profile_store=self.pstore)
+        gid = group["id"]
+        # Second fetch drops HY2, adds TROJAN
+        added, removed, err = self.store.refresh(
+            gid,
+            fetch=lambda url: (VLESS + "\n" + TROJAN).encode(),
+            parse=self.subscriptions.parse_links,
+            profile_store=self.pstore)
+        self.assertIsNone(err)
+        self.assertEqual(removed,
+                         [parsers.parse_uri(HY2)["tag"]])
+        self.assertIn(parsers.parse_uri(TROJAN)["tag"], added)
+
+    def test_refresh_failure_leaves_profiles_untouched(self):
+        group, _ = self.store.add("https://example.com/sub",
+                                  fetcher=lambda url: VLESS.encode(),
+                                  profile_store=self.pstore)
+        gid = group["id"]
+        def boom(url):
+            raise IOError("network down")
+        added, removed, err = self.store.refresh(gid, fetch=boom,
+                                                 parse=self.subscriptions.parse_links,
+                                                 profile_store=self.pstore)
+        self.assertIsNotNone(err)
+        self.assertEqual(added, [])
+        self.assertEqual(removed, [])
+        self.assertIsNotNone(self.store.get(gid)["last_error"])
+
+    def test_due_respects_interval_and_never(self):
+        now = 1000.0
+        self.store.add("https://a.example/sub",
+                       fetcher=lambda url: VLESS.encode(),
+                       profile_store=self.pstore)
+        gid = self.store.groups()[0]["id"]
+        # last_updated = 1000 (injected clock), not due until 24h pass
+        self.assertEqual(self.store.due(now, 24), [])
+        # interval 0 = never
+        self.assertEqual(self.store.due(now, 0), [])
+        # after advancing past N hours, due
+        self.assertEqual(self.store.due(now + 24 * 3600 + 1, 24),
+                         [self.store.get(gid)])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
