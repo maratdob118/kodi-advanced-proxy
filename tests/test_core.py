@@ -2782,5 +2782,33 @@ class TestSubscriptionStore(unittest.TestCase):
                          [self.store.get(gid)])
 
 
+class TestEngineVersionContract(unittest.TestCase):
+    """build.sh and binary_manager.py must pin the same latest engine
+    versions; check_versions.sh treats drift between them as fatal."""
+
+    EXPECTED_SINGBOX = "1.13.15"
+    EXPECTED_XRAY = "26.7.28"
+
+    def test_build_sh_pins_latest_singbox(self):
+        with open(os.path.join(HERE, "..", "build.sh")) as f:
+            src = f.read()
+        self.assertIn('SINGBOX_VERSION="%s"' % self.EXPECTED_SINGBOX, src)
+
+    def test_build_sh_pins_latest_xray(self):
+        with open(os.path.join(HERE, "..", "build.sh")) as f:
+            src = f.read()
+        self.assertIn('XRAY_VERSION="%s"' % self.EXPECTED_XRAY, src)
+
+    def test_binary_manager_pins_latest_singbox(self):
+        with open(os.path.join(SRC, "binary_manager.py")) as f:
+            src = f.read()
+        self.assertIn('SINGBOX_VERSION = "%s"' % self.EXPECTED_SINGBOX, src)
+
+    def test_binary_manager_pins_latest_xray(self):
+        with open(os.path.join(SRC, "binary_manager.py")) as f:
+            src = f.read()
+        self.assertIn('XRAY_VERSION = "%s"' % self.EXPECTED_XRAY, src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

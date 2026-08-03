@@ -16,8 +16,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, ".."))
 ADDON = "service.advancedproxy"
 VERSION = "0.3.0"
-SB_VERSION = "1.13.14"
-XR_VERSION = "25.8.3"
+SB_VERSION = "1.13.15"
+XR_VERSION = "26.7.28"
 UNIVERSAL_PLATFORMS = (
     "android_arm64", "darwin_arm64", "darwin_x64", "linux_arm64",
     "linux_armv7", "linux_x64", "linux_x86", "windows_x64",
@@ -217,7 +217,7 @@ class PackagingFixture:
             return match.group(1) + fake_singbox_digests[asset] + match.group(3)
 
         build_source = re.sub(
-            r'(\["1\.13\.14\|([^\"]+)"\]=")[0-9a-f]{64}(")',
+            r'(\["1\.13\.15\|([^\"]+)"\]=")[0-9a-f]{64}(")',
             replace_test_digest,
             build_source,
         )
