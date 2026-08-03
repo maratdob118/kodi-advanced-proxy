@@ -620,12 +620,16 @@ class TestBuildXray(unittest.TestCase):
         s.update(kw)
         return s
 
-    def test_skip_hysteria2(self):
+    def test_hysteria2_supported_in_xray_26(self):
         profs, _ = parsers.parse_lines([VLESS, HY2, TROJAN])
         cfg, skipped = build_xray.build_config(profs, self._settings())
-        self.assertEqual(len(skipped), 1)
-        self.assertIn("hysteria2", skipped[0][1])
-        self.assertEqual(len(cfg["routing"]["balancers"][0]["selector"]), 2)
+        self.assertEqual(skipped, [])
+        self.assertEqual(len(cfg["routing"]["balancers"][0]["selector"]), 3)
+        hy = [o for o in cfg["outbounds"] if o["protocol"] == "hysteria"][0]
+        self.assertEqual(hy["settings"]["address"], "bigping.duckdns.org")
+        self.assertEqual(hy["settings"]["version"], 2)
+        self.assertEqual(hy["streamSettings"]["hysteriaSettings"]["auth"],
+                         "pass123")
 
     def test_leastping(self):
         profs, _ = parsers.parse_lines([VLESS, TROJAN])
@@ -663,6 +667,91 @@ class TestBuildXray(unittest.TestCase):
         cfg, _ = build_xray.build_config(profs, self._settings())
         socks = [i for i in cfg["inbounds"] if i["protocol"] == "socks"][0]
         self.assertEqual(socks["port"], 1080)
+
+    def _xray_outbound(self, prof, protocol):
+        cfg, skipped = build_xray.build_config([prof], self._settings())
+        self.assertEqual(skipped, [])
+        return [o for o in cfg["outbounds"] if o["protocol"] == protocol][0]
+
+    def test_vmess_outbound(self):
+        prof = parsers.parse_uri(
+            "vmess://uuid-1@h1.example:443?security=auto#VM:1")
+        ob = self._xray_outbound(prof, "vmess")
+        self.assertEqual(ob["settings"]["vnext"][0]["users"][0]["id"],
+                         "uuid-1")
+
+    def test_shadowsocks_outbound(self):
+        prof = parsers.parse_uri("ss://aes-256-gcm:pw@h:8388#SS:1")
+        ob = self._xray_outbound(prof, "shadowsocks")
+        srv = ob["settings"]["servers"][0]
+        self.assertEqual(srv["method"], "aes-256-gcm")
+        self.assertEqual(srv["password"], "pw")
+
+    def test_wireguard_outbound(self):
+        prof = {"protocol": "wireguard", "tag": "wg", "server": "h",
+                "port": 51820, "private_key": "k", "public_key": "pk",
+                "local_address": "10.0.0.2/32,10.0.0.3/32"}
+        ob = self._xray_outbound(prof, "wireguard")
+        self.assertEqual(ob["settings"]["secretKey"], "k")
+        self.assertEqual(ob["settings"]["address"],
+                         ["10.0.0.2/32", "10.0.0.3/32"])
+        self.assertEqual(ob["settings"]["peers"][0]["publicKey"], "pk")
+        self.assertEqual(ob["settings"]["peers"][0]["endpoint"], "h:51820")
+
+    def test_socks_outbound(self):
+        prof = parsers.parse_uri("socks://user:pass@h:1080#SOCKS:1")
+        ob = self._xray_outbound(prof, "socks")
+        user = ob["settings"]["servers"][0]["users"][0]
+        self.assertEqual(user["user"], "user")
+        self.assertEqual(user["pass"], "pass")
+
+    def test_http_outbound(self):
+        prof = parsers.parse_uri("http://user:pass@h:8080#HTTP:1")
+        ob = self._xray_outbound(prof, "http")
+        user = ob["settings"]["servers"][0]["users"][0]
+        self.assertEqual(user["user"], "user")
+
+    def test_skips_tuic(self):
+        prof = parsers.parse_uri("tuic://uuid-3@h:443?password=pw#TU:1")
+        outbounds, tags, skipped = build_xray.build_outbounds([prof])
+        self.assertEqual(outbounds, [])
+        self.assertEqual(tags, [])
+        self.assertTrue(any("tuic" in reason for _, reason in skipped))
+        with self.assertRaises(RuntimeError):
+            build_xray.build_config([prof], self._settings())
+
+    # ----- DNS -------------------------------------------------------
+
+    def test_dns_udp_server(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(
+            profs, self._settings(dns_server="8.8.8.8"))
+        self.assertIn("8.8.8.8", cfg["dns"]["servers"])
+
+    def test_dns_doh_server(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(
+            profs, self._settings(dns_server="https://dns.google/dns-query"))
+        self.assertIn("https://dns.google/dns-query", cfg["dns"]["servers"])
+
+    def test_dns_dot_server(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(
+            profs, self._settings(dns_server="tls://8.8.8.8"))
+        self.assertIn("tcp+tls://8.8.8.8:853", cfg["dns"]["servers"])
+
+    def test_dns_query_strategy(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(
+            profs, self._settings(dns_server="8.8.8.8",
+                                  dns_query_strategy="prefer_ipv4"))
+        self.assertEqual(cfg["dns"]["queryStrategy"], "UseIPv4")
+
+    def test_dns_empty_keeps_current_list(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(profs, self._settings())
+        self.assertIn("1.1.1.1", cfg["dns"]["servers"])
+        self.assertIn("localhost", cfg["dns"]["servers"])
 
 
 class TestHelpers(unittest.TestCase):
