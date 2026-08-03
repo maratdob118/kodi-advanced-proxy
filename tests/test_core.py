@@ -286,7 +286,7 @@ class TestParsers(unittest.TestCase):
                 ("vmess://u@h:443#T", "vmess"),
                 ("ss://aes-256-gcm:p@h:8388#T", "shadowsocks"),
                 ("socks://h:1080#T", "socks"),
-                ("http://h:8080#T", "http"),
+                ("http://user:pass@h:8080#T", "http"),
                 ("wireguard://k@h:51820#T", "wireguard"),
                 ("tuic://u@h:443#T", "tuic")):
             self.assertIsNone(parsers.parse_uri(uri, disabled_protocols=(proto,)),
