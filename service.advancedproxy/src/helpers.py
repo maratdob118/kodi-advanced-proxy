@@ -24,6 +24,10 @@ _DEFAULTS = {
     "test_url": "https://www.gstatic.com/generate_204",
     "interrupt_connections": "true",
     "skip_protocols": "trojan,xhttp",
+    "subscription_interval_hours": "0",
+    "disable_proto_vless": "false",
+    "disable_proto_trojan": "false",
+    "disable_proto_hysteria2": "false",
     "log_level": "1",
     "binary_platform_override": "auto",
     "binary_custom_path": "",
@@ -71,11 +75,51 @@ def get_settings(reader=None):
         "test_url": s("test_url"),
         "interrupt_connections": b("interrupt_connections"),
         "skip_protocols": s("skip_protocols"),
+        "subscription_interval_hours": i("subscription_interval_hours"),
+        "disable_proto_vless": b("disable_proto_vless"),
+        "disable_proto_trojan": b("disable_proto_trojan"),
+        "disable_proto_hysteria2": b("disable_proto_hysteria2"),
         "log_level": _LOG_LEVELS.get(str(s("log_level")), "info"),
         "binary_platform_override": s("binary_platform_override"),
         "binary_custom_path": s("binary_custom_path"),
         "auto_configure_integration": b("auto_configure_integration"),
     }
+
+
+def disabled_protocols(reader=None):
+    """Tuple of protocols to skip: toggles merged with legacy skip list.
+
+    The legacy `skip_protocols` value counts only when it was explicitly set
+    (present in the raw reader output), so a fresh install does not inherit
+    the old default silently.
+    """
+    raw = (reader or _read_kodi_settings)() or {}
+    toggles = []
+    for key, protocol in (("disable_proto_vless", "vless"),
+                          ("disable_proto_trojan", "trojan"),
+                          ("disable_proto_hysteria2", "hysteria2")):
+        if str(raw.get(key, "false")).lower() in ("true", "1"):
+            toggles.append(protocol)
+    legacy = []
+    if raw.get("skip_protocols"):
+        legacy = [part.strip() for part in
+                  str(raw["skip_protocols"]).split(",") if part.strip()]
+    return tuple(dict.fromkeys(toggles + legacy))
+
+
+def copy_to_clipboard(text):
+    """Copy TEXT to the Kodi clipboard; falls back to a text-view dialog."""
+    try:
+        import xbmc
+        xbmc.Keyboard(text).setText(text)
+        return True
+    except Exception:
+        try:
+            import xbmcgui
+            xbmcgui.Dialog().textviewer("Advanced Proxy", text)
+        except Exception:
+            pass
+        return False
 
 
 def addon_dir():

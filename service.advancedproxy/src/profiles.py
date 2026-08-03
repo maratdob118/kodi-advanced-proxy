@@ -57,7 +57,7 @@ class ProfileStore(object):
         return en[0] if en else None
 
     # ----- mutations -------------------------------------------------
-    def add_uri(self, uri):
+    def add_uri(self, uri, subscription=None):
         """Parse and append a profile link. Returns (profile, error)."""
         p = parsers.parse_uri(uri.strip())
         if p is None:
@@ -67,11 +67,51 @@ class ProfileStore(object):
             return self.get(p["tag"]), None
         p["enabled"] = True
         p["uri"] = uri.strip()
+        if subscription is not None:
+            p["subscription"] = subscription
         self.profiles.append(p)
         if not self.active_tag:
             self.active_tag = p["tag"]
         self.save()
         return p, None
+
+    def add_subscription_profiles(self, parsed, group_id):
+        """Append PARSED profiles tagged with GROUP_ID, de-duping by URI.
+
+        A manual profile (no subscription) with the same URI wins: its copy
+        from the subscription is skipped. Profiles without a URI are always
+        added. Returns the number added.
+        """
+        existing = {p.get("uri") for p in self.profiles
+                    if p.get("uri") is not None
+                    and p.get("subscription") is None}
+        added = 0
+        for p in parsed:
+            uri = p.get("uri")
+            if uri is not None and uri in existing:
+                continue
+            p["enabled"] = True
+            p["subscription"] = group_id
+            self.profiles.append(p)
+            if uri is not None:
+                existing.add(uri)
+            added += 1
+        if added and not self.active_tag:
+            self.active_tag = self.profiles[0]["tag"]
+        self.save()
+        return added
+
+    def remove_by_subscription(self, group_id):
+        """Remove every profile carrying GROUP_ID and re-pick the active."""
+        removed = [p["tag"] for p in self.profiles
+                   if p.get("subscription") == group_id]
+        self.profiles = [p for p in self.profiles
+                         if p.get("subscription") != group_id]
+        if self.active_tag in removed:
+            en = self.enabled()
+            self.active_tag = en[0]["tag"] if en else None
+        self.save()
+        return removed
 
     def remove(self, tag):
         self.profiles = [p for p in self.profiles if p["tag"] != tag]
