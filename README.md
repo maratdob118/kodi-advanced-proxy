@@ -1,283 +1,139 @@
-# Advanced Proxy (`service.advancedproxy`)
+# Advanced Proxy
 
-Kodi service addon that runs a bundled **sing-box** or **Xray** binary as a local
-mixed SOCKS5/HTTP proxy, builds its config from profile links or a subscription
-URL, and switches outbound either manually or automatically via `urltest`
-(latency-based, with tolerance).
+**Локальный прокси для Kodi на sing-box и Xray — с профилями, подписками, автоматическим выбором сервера и интеграцией с системным прокси Kodi.**
 
-The addon id is **`service.advancedproxy`** and does not change.
+English: [README (EN)](#english) · Русский: [README (RU)](#русский)
 
-## What it does
+---
 
-- Ships official sing-box and Xray binaries per platform in `resources/bin/<platform>/`
-- On Kodi startup (service extension) it:
-  1. detects the platform (`osarch.py`)
-  2. copies the matching engine binary into the writable profile dir
-  3. loads profiles / fetches the subscription, parses `vless://`, `hy2://` and
-     `trojan://` links, and builds an engine config
-  4. validates the config with the engine's own check command
-  5. launches the engine on a local mixed SOCKS5+HTTP port (default `1080`,
-     with free-port fallback when the port is taken)
-- Watches the process and restarts it on crash with exponential backoff
-- Re-pulls the subscription and reloads config periodically
-- Reacts to settings changes live
-- Points Kodi's own proxy settings (and supported addons such as
-  `plugin.video.youtube`) at the **effective** port, and restores the previous
-  values on a clean stop — see `docs/superpowers/specs/`
+# English
 
-## Distribution: two repositories
+## What is this?
 
-Source and distribution live in two separate GitHub repositories.
+Advanced Proxy is a Kodi service addon that runs a **local proxy on your device** — no separate computer, router or VPN client needed. It starts together with Kodi, listens on `127.0.0.1` (default port `1080`), and routes Kodi's traffic through a proxy server that you choose.
 
-| Repository | Role | Contents |
-| --- | --- | --- |
-| `maratdob118/kodi-advanced-proxy` | Source monorepo (this repo) | Addon source, build/test tooling, CI. Publishes a GitHub Release per addon version. |
-| `maratdob118/kodi-addons` | Generated Kodi repository | Text-only in Git (`addons.xml`, `addons.xml.md5`, repository addon metadata). Binary payload is served from GitHub Pages. |
+Under the hood it uses the two most popular open-source proxy engines — **sing-box** and **Xray-core** — bundled right inside the addon, so nothing extra needs to be installed.
 
-The Kodi repository addon is a second, separate addon: **`repository.bigping`**.
-Installing it once lets Kodi discover and auto-update Advanced Proxy.
+## What it can do
 
-### Two artifact shapes, on purpose
+- **One click proxy for all of Kodi.** The addon points Kodi's own network proxy (and addons like YouTube that use it) at the local proxy automatically, and restores your previous settings when it stops.
+- **Connect with profile links.** Paste a link and you're ready:
+  `vless://`, `vmess://`, `trojan://`, `ss://` (Shadowsocks), `hy2://` (Hysteria2), `wireguard://`, `tuic://`, `socks://`, `http://`.
+- **Subscriptions.** Paste a subscription URL — plain text, base64, or JSON with multiple server configs — and the addon imports all servers from it, keeps them updated on a schedule, and cleans up when you remove the subscription.
+- **Automatic or manual server choice.**
+  - **urltest**: the addon measures latency and automatically picks the fastest working server.
+  - **Manual**: you pick the active server from the addon menu.
+- **Availability check.** Before activating a server, the addon checks that it is reachable — unreachable servers are skipped, not broken.
+- **DNS control.** Set a DNS resolver of your choice: plain UDP, DoH (`https://…`) or DoT (`tls://…`), plus an IPv4/IPv6 preference.
+- **Torrent-friendly.** Optional "Direct BitTorrent" toggle sends torrent traffic straight to the internet, bypassing the proxy.
+- **Geo rules (Xray).** Optional geoip/geosite databases (default: Russia-blocked lists) send listed networks straight to `direct`.
+- **Both engines, all protocols.** sing-box 1.13.15 and Xray 26.7.28, each building what it supports (tuic is sing-box only).
+- **Resilient.** Watchdog restarts a crashed engine with backoff, port fallback picks a free port when `1080` is busy, and your chosen port stays stable for the session.
 
-- **Eight per-platform ZIPs** — `service.advancedproxy-<version>.<platform>.zip`
-  for `linux_x64`, `linux_x86`, `linux_armv7`, `linux_arm64`, `android_arm64`,
-  `windows_x64`, `darwin_x64`, `darwin_arm64`. These stay on the **GitHub
-  Release** of the source repo for manual/offline "Install from zip" use. Each
-  contains exactly one platform's binaries, so it stays small.
-- **One universal ZIP** — `service.advancedproxy-<version>.zip`, containing all
-  eight platform binary directories (~235 MB). This is the artifact the **Kodi
-  repository** serves, and the addon selects the right binary at runtime.
+## What it cannot do (yet)
 
-A Kodi repository has exactly **one canonical ZIP path per addon version**:
+- **Clash / Surge YAML subscriptions** are not supported — only plain text, base64 and JSON config lists.
+- **SSH, shadowtls, naive, shadowsocksr** links are not parsed.
+- **TUIC on Xray** — Xray does not support TUIC in any version; tuic works with sing-box.
+- **Geo rules on sing-box** — sing-box 1.12+ removed embedded geoip/geosite databases, so geo rules apply to Xray only (sing-box would need external rule-sets).
+- **QR codes, auto-restart of YouTube**, per-subscription refresh intervals (the interval is shared).
+- It is a **proxy**, not a firewall or ad-blocker.
 
-```
-<datadir>/<addon.id>/<addon.id>-<version>.zip
-```
+## Requirements & compatibility
 
-`addons.xml` declares a single `<addon id="service.advancedproxy" version="X.Y.Z">`
-entry, and Kodi resolves it to that one path. There is no OS/arch negotiation in
-the repository protocol — no per-platform variant selection, no fallback list.
-So the ZIP behind that single path must work on every supported platform, which
-is why the universal ZIP exists and why per-platform ZIPs cannot be used for the
-repository install path.
+- **Kodi 20 (Nexus) or newer** (Kodi 19 Matrix has the right Python, but the repository manifest requires 20+).
+- Works on **LibreELEC / CoreELEC / OSMC / Android / Windows / macOS / Linux** — any Kodi device.
+- ARM (Raspberry Pi 3/4/5, Amlogic boxes), x86_64, Windows and macOS builds are all shipped.
 
-### Why GitHub Pages hosts the ZIPs
+## Installation
 
-The universal ZIP is roughly 235 MB. GitHub rejects any single file over
-**100 MB** pushed into a Git repository, so the universal ZIP can never be a Git
-blob in `kodi-addons` (and `raw.githubusercontent.com` only serves Git
-blobs, so it is not an option either).
+**From the Kodi repository (recommended — auto-updates):**
 
-Instead:
+1. Download `repository.bigping-<version>.zip` from the [latest release](https://github.com/maratdob118/kodi-advanced-proxy/releases).
+2. In Kodi: **Add-ons → Install from zip file** → pick the zip.
+3. Then **Install from repository → BigPing → Services → Advanced Proxy**.
 
-- `kodi-addons` stays **text-only in Git** — nothing large is ever
-  committed.
-- The binary payload is published as a **GitHub Pages deployment artifact**,
-  which is not a Git commit and is not subject to the blob limit.
-- Pages serves everything over **HTTPS**, which Kodi 20+ expects for a
-  repository `datadir`.
-- A deployment replaces the whole site, so Pages carries only the **current**
-  version: one ~235 MB payload, well under the 1 GB artifact ceiling. Nothing is
-  pruned, because nothing old is uploaded. Every historic asset stays on the
-  source repo's releases, which is where a rollback or an offline install comes
-  from.
-- Each published ZIP is served with a `<zip>.sha256` sidecar. Kodi reads a
-  `content-sha256` response header first and falls back to that sidecar; Pages
-  cannot set response headers, so the sidecar is the only digest channel
-  available and is mandatory.
+**Manual install:**
 
-Planned repository layout as served by Pages:
+1. Grab the ZIP matching your platform from the [latest release](https://github.com/maratdob118/kodi-advanced-proxy/releases):
+   `service.advancedproxy-<version>.linux_arm64.zip` (Raspberry Pi 4/5, LibreELEC ARM64),
+   `service.advancedproxy-<version>.linux_armv7.zip` (Raspberry Pi 3),
+   `service.advancedproxy-<version>.windows_x64.zip`, `...darwin_arm64.zip`, etc.
+2. In Kodi: **Add-ons → Install from zip file** → pick the ZIP.
 
-```
-https://maratdob118.github.io/kodi-addons/
-├── addons.xml                 # all addons + versions offered by this repo
-├── addons.xml.md5             # md5 of addons.xml; Kodi polls this for changes
-├── repository.bigping/
-│   ├── repository.bigping-<version>.zip
-│   └── repository.bigping-<version>.zip.sha256
-└── service.advancedproxy/
-    ├── service.advancedproxy-<version>.zip     # universal, all platforms
-    ├── service.advancedproxy-<version>.zip.sha256
-    └── resources/             # icon/fanart addons.xml resolves, from the payload
-```
+## Getting started
 
-`repository.bigping` uses the Kodi 20+ (Nexus and later) repository form, where
-`<info>`, `<checksum>` and `<datadir>` are wrapped in a `<dir>` element rather
-than placed directly under the extension point:
+1. Open **Advanced Proxy** from the addons menu.
+2. Press **Add** and paste either:
+   - a single profile link (`vless://…`, `hy2://…`, `trojan://…`, …), or
+   - a subscription URL — the addon detects which one it is automatically.
+3. Pick the mode in settings: **urltest** (automatic) or **manual** (you choose).
+4. Go to **Settings → Subscriptions** to set the refresh interval, DNS server, torrent toggle and geo databases.
+5. In Kodi's network settings the proxy will already point at `127.0.0.1:1080` (or the fallback port the addon chose). Done — browse and stream.
 
-```xml
-<extension point="xbmc.addon.repository" name="BigPing">
-  <dir minversion="20.0.0">
-    <info compressed="false">https://maratdob118.github.io/kodi-addons/addons.xml</info>
-    <checksum verify="md5">https://maratdob118.github.io/kodi-addons/addons.xml.md5</checksum>
-    <datadir zip="true">https://maratdob118.github.io/kodi-addons/</datadir>
-  </dir>
-</extension>
-```
+---
 
-### Publishing flow
+# Русский
 
-1. **Source release flow** (`maratdob118/kodi-advanced-proxy`): on a push to
-   `main`, CI runs
-   tests, builds the eight per-platform ZIPs plus the universal ZIP, and — if
-   the version in `addon.xml` has no release yet — publishes GitHub Release
-   `vX.Y.Z` with all ZIPs and checksums. Uses the repository-scoped
-   `GITHUB_TOKEN`.
-2. **Target Pages flow** (`maratdob118/kodi-addons`): the source repo
-   commits regenerated `addons.xml` / `addons.xml.md5` / `manifest.json` /
-   repository metadata to the target repo using a **fine-grained** PAT stored as
-   `KODI_ADDONS_TOKEN`, scoped to that one repository with the single
-   permission **Contents: write**. That commit triggers the target repo's own
-   Pages workflow, which downloads the universal ZIP from the source Release,
-   checks its bytes against the SHA256 the manifest measured at build time, and
-   deploys it under the canonical path with its digest sidecar. A classic PAT is
-   not used.
+## Что это?
 
-The target repo's Pages workflow and its site builder are **bootstrapped by
-hand**, once, from the template in `bootstrap/bigping.repository/`. They are
-deliberately not part of the tree the publisher writes: a token that could
-create or edit `.github/workflows/` would need the `workflows` permission, so
-keeping the workflow outside the published set is what holds the PAT down to
-`Contents: write`. Later releases only push generated metadata over it.
+Advanced Proxy — сервисный аддон Kodi, который запускает **локальный прокси прямо на вашем устройстве** — без отдельного компьютера, роутера или VPN-клиента. Аддон стартует вместе с Kodi, слушает `127.0.0.1` (по умолчанию порт `1080`) и направляет трафик Kodi через выбранный вами прокси-сервер.
 
-Both flows are keyed by addon version and are idempotent: re-running for an
-already-released version is a no-op, and concurrency is non-cancelling so two
-pushes can never race a release.
+Внутри используются два самых популярных open-source движка — **sing-box** и **Xray-core** — встроенные прямо в аддон: ничего дополнительно устанавливать не нужно.
 
-## Installing
+## Что умеет
 
-**From the Kodi repository (recommended, gives auto-updates):** install
-`repository.bigping-<version>.zip` once via **Add-ons → Install from zip file**,
-then **Add-ons → Install from repository → BigPing → Services → Advanced
-Proxy**.
+- **Прокси одним кликом для всего Kodi.** Аддон сам указывает сетевой прокси Kodi (и аддоны вроде YouTube, которые его используют) на локальный прокси, а при остановке восстанавливает прежние настройки.
+- **Подключение по ссылкам.** Вставьте ссылку — и готово:
+  `vless://`, `vmess://`, `trojan://`, `ss://` (Shadowsocks), `hy2://` (Hysteria2), `wireguard://`, `tuic://`, `socks://`, `http://`.
+- **Подписки.** Вставьте URL подписки — plain-текст, base64 или JSON с несколькими конфигами серверов — и аддон импортирует все серверы, обновляет их по расписанию и убирает при удалении подписки.
+- **Автоматический или ручной выбор сервера.**
+  - **urltest**: аддон измеряет задержку и сам выбирает самый быстрый рабочий сервер.
+  - **Вручную**: вы выбираете активный сервер в меню аддона.
+- **Проверка доступности.** Перед активацией сервер проверяется — недоступные пропускаются, а не «ломаются».
+- **Управление DNS.** Свой резолвер: обычный UDP, DoH (`https://…`) или DoT (`tls://…`), плюс предпочтение IPv4/IPv6.
+- **Дружелюбен к торрентам.** Опция «Прямой BitTorrent» отправляет торрент-трафик напрямую в интернет, в обход прокси.
+- **Гео-правила (Xray).** Опциональные geoip/geosite базы (по умолчанию — списки заблокированных в РФ сетей) отправляют перечисленные сети напрямую в `direct`.
+- **Оба движка, все протоколы.** sing-box 1.13.15 и Xray 26.7.28, каждый строит то, что поддерживает (tuic — только sing-box).
+- **Устойчивость.** Watchdog перезапускает упавший движок с экспоненциальной паузой, при занятом порте `1080` выбирается свободный, и выбранный порт остаётся стабильным на всю сессию.
 
-**Manually:** download the ZIP matching your platform from the source repo's
-GitHub Release and install it via **Install from zip file**. No auto-updates.
+## Что пока не умеет
 
-> Status: the repository and Pages site described above are the designed target
-> and are not published yet. The URLs are the intended ones, not live endpoints.
+- **Подписки Clash / Surge YAML** не поддерживаются — только plain-текст, base64 и JSON-списки конфигов.
+- **Ссылки SSH, shadowtls, naive, shadowsocksr** не парсятся.
+- **TUIC на Xray** — Xray не поддерживает TUIC ни в одной версии; tuic работает только с sing-box.
+- **Гео-правила на sing-box** — sing-box 1.12+ убрал встроенные geoip/geosite базы, поэтому гео-правила работают только на Xray (для sing-box нужны внешние rule-set'ы).
+- **QR-коды, автоперезапуск YouTube**, отдельные интервалы обновления для каждой подписки (интервал общий).
+- Это **прокси**, а не файрвол и не блокировщик рекламы.
 
-## Layout
+## Требования и совместимость
 
-```
-service.advancedproxy/
-├── addon.xml                 # xbmc.service extension (start=startup)
-├── main.py                   # Kodi service entry (xbmc.Monitor loop)
-├── default.py                # addon menu entry point
-├── resources/
-│   ├── settings.xml          # profiles, subscription url, ports, urltest params
-│   ├── language/.../strings.po
-│   ├── licenses/             # pinned upstream engine licenses/notices
-│   └── bin/<platform>/       # engine binaries (git-ignored, fetched by build.sh)
-└── src/
-    ├── osarch.py             # platform detection -> linux_x64/armv7/...
-    ├── binary_manager.py     # binary locate/download/launch/stop (Kodi-free)
-    ├── parsers.py            # proxy link parsing (Kodi-free)
-    ├── profiles.py           # profile storage/selection (Kodi-free)
-    ├── build_singbox.py      # profiles -> sing-box config (Kodi-free)
-    ├── build_xray.py         # profiles -> Xray config (Kodi-free)
-    ├── port_utils.py         # free-port fallback (Kodi-free)
-    ├── supervisor.py         # keep-alive + reload orchestration (Kodi-free)
-    ├── proxy_integration.py  # Kodi/addon proxy settings sync (Kodi-free)
-    └── helpers.py            # the ONLY xbmc* consumer (settings/paths/JSON-RPC)
+- **Kodi 20 (Nexus) или новее** (в Kodi 19 Matrix Python подходит, но манифест репозитория требует 20+).
+- Работает на **LibreELEC / CoreELEC / OSMC / Android / Windows / macOS / Linux** — на любом устройстве с Kodi.
+- ARM (Raspberry Pi 3/4/5, Amlogic-приставки), x86_64, Windows и macOS — все сборки в комплекте.
 
-build.sh                      # build addon zips into dist/
-dev_run.py                    # run the supervisor WITHOUT Kodi (dev harness)
-scripts/                      # version/addon/ZIP validation and release helpers
-bootstrap/bigping.repository/ # template bootstrapped by hand into the Kodi repo
-tests/                        # unittest suites (Kodi-free)
-docs/superpowers/             # design spec and implementation plans
-.github/workflows/            # CI, build matrix, release, repository publish
-```
+## Установка
 
-## Design notes
+**Из репозитория Kodi (рекомендуется — автообновления):**
 
-- **Kodi-free core.** Everything under `src/` except `helpers.py` avoids
-  importing `xbmc*`; only `helpers.py` (settings/paths/JSON-RPC) and `main.py`
-  (monitor loop) touch the Kodi API. This makes the logic testable on any
-  machine.
-- **Binary lifecycle** follows the Elementum pattern: the bundled
-  `resources/bin/<platform>/` engine is copied to the writable profile dir and
-  `chmod +x`; if absent it is downloaded from the official upstream release for
-  the detected platform. A `mixed` inbound serves both SOCKS5 and HTTP on one
-  port, which is exactly what Kodi's proxy settings expect.
-- **urltest** uses `interval`, `tolerance` (switch only when a node beats the
-  current one by N ms) and `interrupt_exist_connections` from settings.
-- **Binaries are not tracked in Git.** `resources/bin/` is ignored; `build.sh`
-  downloads pinned upstream release assets at build time.
+1. Скачайте `repository.bigping-<version>.zip` из [последнего релиза](https://github.com/maratdob118/kodi-advanced-proxy/releases).
+2. В Kodi: **Аддоны → Установить из zip-файла** → выберите zip.
+3. Затем: **Установить из репозитория → BigPing → Службы → Advanced Proxy**.
 
-## Local development (no Kodi)
+**Установка вручную:**
 
-```bash
-# generate + validate config only
-python3 dev_run.py --no-run
+1. Возьмите ZIP под вашу платформу из [последнего релиза](https://github.com/maratdob118/kodi-advanced-proxy/releases):
+   `service.advancedproxy-<version>.linux_arm64.zip` (Raspberry Pi 4/5, LibreELEC ARM64),
+   `service.advancedproxy-<version>.linux_armv7.zip` (Raspberry Pi 3),
+   `service.advancedproxy-<version>.windows_x64.zip`, `...darwin_arm64.zip` и т.д.
+2. В Kodi: **Аддоны → Установить из zip-файла** → выберите ZIP.
 
-# run the proxy locally for N seconds
-python3 dev_run.py --seconds 30 &
-curl --proxy http://127.0.0.1:1080 https://ifconfig.me
+## Быстрый старт
 
-# unit tests
-python3 -m unittest discover -s tests -v
-
-# metadata / version consistency checks
-bash scripts/check_versions.sh .
-python3 scripts/validate_addon.py .
-```
-
-## Build addon zips
-
-```bash
-./build.sh                 # all platforms -> dist/
-./build.sh linux_armv7     # single platform
-./build.sh --print-version # addon version from addon.xml
-```
-
-Each `dist/service.advancedproxy-<ver>.<platform>.zip` contains identical Python
-code plus that platform's engine binaries, installable via Kodi "Install from
-zip". The universal ZIP used by the Kodi repository carries all platforms'
-binaries instead.
-
-## Bundled engines
-
-Each release zip bundles the official, unmodified release binaries of two
-separate proxy engines next to the addon's own Python code:
-
-| Engine | Version | License | Release |
-| --- | --- | --- | --- |
-| sing-box | v1.13.14 | GPL-3.0-or-later (with name-association restriction; JA3 component BSD-3-Clause) | <https://github.com/SagerNet/sing-box/releases/tag/v1.13.14> |
-| Xray-core | v25.8.3 | MPL-2.0 | <https://github.com/XTLS/Xray-core/releases/tag/v25.8.3> |
-
-The engines run as separate executables: the addon launches them as child
-processes and never links against them. Their binaries are unmodified. The
-exact license texts, including sing-box's JA3 BSD-3-Clause notice, are pinned
-under `service.advancedproxy/resources/licenses/` and copied into every zip
-beside the binaries.
-
-## Licensing
-
-The addon itself is licensed under the GNU General Public License, version 3
-or later (`GPL-3.0-or-later`); see the root `LICENSE` and
-`THIRD_PARTY_NOTICES.md` files, which are also included inside every release
-zip. The bundled engines keep their own licenses:
-
-- **sing-box v1.13.14** is GPL-3.0-or-later, with an additional term in its
-  license that no derivative work may use the name "sing-box" or imply
-  association with the project without prior consent. Its JA3 fingerprinting
-  component is BSD-3-Clause (Copyright (c) 2018, Open Systems AG).
-- **Xray-core v25.8.3** is MPL-2.0, reproduced in full under
-  `service.advancedproxy/resources/licenses/xray/LICENSE`.
-
-Source code for both engines is available from the pinned release tags linked
-above.
-
-## Status
-
-Local x86_64 flow verified end-to-end: platform detection, config generation,
-engine config check passes, the proxy answers on the local port for both HTTP
-and SOCKS5, watchdog restart after `kill -9` works, and the unit test suite
-passes.
-
-Not yet done: publishing the two repositories, the Pages-hosted Kodi repository,
-and acceptance testing of the live repository-install path on armv7
-(Raspberry Pi / LibreELEC). Binaries for the other architectures are already
-fetchable via `build.sh <platform>`.
+1. Откройте **Advanced Proxy** в меню аддонов.
+2. Нажмите **Добавить** и вставьте:
+   - либо ссылку профиля (`vless://…`, `hy2://…`, `trojan://…`, …),
+   - либо URL подписки — аддон сам определит, что это.
+3. Выберите режим в настройках: **urltest** (автоматически) или **вручную** (выбираете сами).
+4. В **Настройки → Подписки** задайте интервал обновления, DNS-сервер, торрент-переключатель и гео-базы.
+5. В сетевых настройках Kodi прокси уже будет указывать на `127.0.0.1:1080` (или на запасной порт, выбранный аддоном). Готово — смотрите и стримьте.
