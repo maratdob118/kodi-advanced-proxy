@@ -701,6 +701,13 @@ class TestBuildXray(unittest.TestCase):
         self.assertEqual(ob["settings"]["vnext"][0]["users"][0]["id"],
                          "uuid-1")
 
+    def test_tcp_profiles_omit_network_key(self):
+        # Xray defaults streamSettings.network to tcp when absent; keep the
+        # omission explicit so a future refactor cannot silently change it.
+        prof = parsers.parse_uri(TROJAN)
+        ob = self._xray_outbound(prof, "trojan")
+        self.assertNotIn("network", ob.get("streamSettings", {}))
+
     def test_shadowsocks_outbound(self):
         prof = parsers.parse_uri("ss://aes-256-gcm:pw@h:8388#SS:1")
         ob = self._xray_outbound(prof, "shadowsocks")

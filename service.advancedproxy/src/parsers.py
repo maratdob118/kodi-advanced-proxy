@@ -459,6 +459,8 @@ def parse_config(text):
     (outbounds[].protocol), a JSON array of full configs, or an already
     parsed dict/list. Returns (profiles, skipped). Profiles carry
     protocol/server/port (no uri). Raises ValueError on invalid JSON.
+    Tags are made unique across the whole batch (a repeated outbound tag
+    gets a numeric suffix) because engines reject duplicate tags.
     """
     if isinstance(text, (dict, list)):
         data = text
@@ -470,6 +472,7 @@ def parse_config(text):
             raise ValueError("config is not valid JSON: %s" % e)
     documents = data if isinstance(data, list) else [data]
     profiles, skipped = [], []
+    used_tags = {}
     for doc in documents:
         if not isinstance(doc, dict):
             continue
@@ -491,8 +494,15 @@ def parse_config(text):
             if profile is None:
                 skipped.append((out.get("tag") or "?", "non-proxy"))
                 continue
-            if not profile.get("tag") or profile["tag"] in ("sing-box", "xray"):
-                profile["tag"] = remarks or profile["tag"]
+            tag = profile.get("tag") or remarks
+            if tag in ("sing-box", "xray") or not tag:
+                tag = remarks or tag
+            if tag in used_tags:
+                used_tags[tag] += 1
+                tag = "%s-%d" % (tag, used_tags[tag])
+            else:
+                used_tags[tag] = 1
+            profile["tag"] = tag
             profiles.append(profile)
     return profiles, skipped
 

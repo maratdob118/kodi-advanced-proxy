@@ -85,7 +85,8 @@ def _outbound(p):
             }]},
         }
     if proto == "hysteria2":
-        # Xray hysteria = hysteria2 via the QUIC hysteria transport (v2).
+        # Xray hysteria = hysteria2 via the QUIC hysteria transport (v2);
+        # both the outbound settings and the hysteria transport carry version.
         return {
             "tag": p["tag"],
             "protocol": "hysteria",
@@ -96,7 +97,8 @@ def _outbound(p):
                 "network": "hysteria",
                 "security": "tls",
                 "tlsSettings": {"serverName": p.get("sni", p["server"])},
-                "hysteriaSettings": {"auth": p.get("password", "")},
+                "hysteriaSettings": {"version": 2,
+                                     "auth": p.get("password", "")},
             },
         }
     if proto == "wireguard":
