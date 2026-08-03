@@ -15,7 +15,6 @@ import build_xray
 import port_utils
 import profiles
 
-
 def _default_log(msg, level="info"):
     pass
 
@@ -46,6 +45,8 @@ class ProxySupervisor(object):
         self._last_active_tag = None
         self.effective_port = None
         self._shutting_down = False
+        self._refreshing_subscriptions = False
+        self.refresh_subscriptions = None  # injectable; real default set lazily
 
     def _make_binary_manager(self):
         return binary_manager.BinaryManager(
@@ -221,6 +222,7 @@ class ProxySupervisor(object):
     # ----- tick ------------------------------------------------------
     def tick(self):
         now = time.time()
+        self._maybe_refresh_subscriptions(now)
 
         if self.bin.is_running():
             if not self._was_running:
@@ -277,6 +279,54 @@ class ProxySupervisor(object):
             self.notify("Active profile: %s" % tag)
         if tag:
             self._last_active_tag = tag
+
+    # ----- subscription refresh -------------------------------------
+    def _maybe_refresh_subscriptions(self, now):
+        """Refresh due subscription groups, once per tick, never re-entered."""
+        interval = int(self.settings.get("subscription_interval_hours", 0) or 0)
+        if not interval or self._refreshing_subscriptions:
+            return
+        self._refreshing_subscriptions = True
+        try:
+            refresher = self.refresh_subscriptions or self._refresh_due
+            changed = refresher(now, interval)
+            if changed:
+                self._apply_subscription_changes()
+        except Exception as e:
+            self.log("subscription refresh failed: %s" % e, "error")
+        finally:
+            self._refreshing_subscriptions = False
+
+    def _refresh_due(self, now, interval_hours):
+        """Real refresh of every due group; returns True when profiles changed."""
+        import helpers
+        import subscriptions
+
+        store = subscriptions.SubscriptionStore(
+            os.path.join(self.work_dir, "subscriptions.json"))
+        changed = False
+        for group in store.due(now, interval_hours):
+            added, removed, err = store.refresh(
+                group["id"],
+                parse=lambda links: subscriptions.parse_links(
+                    links, helpers.disabled_protocols()),
+                profile_store=self.store)
+            if err:
+                self.log("subscription %s refresh failed: %s"
+                         % (group["url"], err), "warn")
+            elif added or removed:
+                changed = True
+        return changed
+
+    def _apply_subscription_changes(self):
+        """Re-pick the active profile and rebuild the engine config."""
+        if not self.store.enabled():
+            self.log("no enabled profiles after subscription refresh", "warn")
+            return
+        if self.bin.is_running():
+            self.reconfigure_engine()
+        elif self.settings.get("autostart"):
+            self._start_with_port()
 
     def reload_profiles(self):
         """Re-read profiles.json (called when the UI changed profiles)."""
