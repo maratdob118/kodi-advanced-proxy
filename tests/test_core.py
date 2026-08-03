@@ -287,6 +287,33 @@ class TestProfileStore(unittest.TestCase):
         self.assertEqual(self.store.profiles, [])
         self.assertIsNone(self.store.active_tag)
 
+    def test_sync_subscription_adds_removes_and_keeps_enabled(self):
+        import subscriptions
+        parsed, _ = subscriptions.parse_links([VLESS, HY2])
+        self.store.add_subscription_profiles(parsed, "sub-abc123")
+        self.store.toggle("AUTO:VLESS")  # user disables one profile
+        self.store.set_active("AUTO:Hysteria2")
+        # refresh body drops HY2, keeps VLESS
+        new_parsed, _ = subscriptions.parse_links([VLESS])
+        added, removed = self.store.sync_subscription(new_parsed, "sub-abc123")
+        self.assertEqual(added, [])
+        self.assertEqual(removed, ["AUTO:Hysteria2"])
+        self.assertEqual([p["tag"] for p in self.store.profiles],
+                         ["AUTO:VLESS"])
+        self.assertFalse(self.store.get("AUTO:VLESS")["enabled"],
+                         "sync must keep the user's enabled flag")
+        self.assertIsNone(self.store.active_tag,
+                          "no enabled profile remains, so no active profile")
+
+    def test_sync_subscription_adds_new_links(self):
+        import subscriptions
+        parsed, _ = subscriptions.parse_links([VLESS])
+        self.store.add_subscription_profiles(parsed, "sub-abc123")
+        new_parsed, _ = subscriptions.parse_links([VLESS, HY2])
+        added, removed = self.store.sync_subscription(new_parsed, "sub-abc123")
+        self.assertEqual(added, ["AUTO:Hysteria2"])
+        self.assertEqual(removed, [])
+
 
 class TestBuildSingbox(unittest.TestCase):
     def _settings(self, **kw):

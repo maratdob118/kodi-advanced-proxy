@@ -113,6 +113,45 @@ class ProfileStore(object):
         self.save()
         return removed
 
+    def sync_subscription(self, parsed, group_id):
+        """Mirror one subscription group against PARSED profiles.
+
+        Adds profiles that are new, removes profiles that disappeared, keeps
+        the `enabled` flag of profiles that remain, and keeps the active
+        profile when still present. Returns (added_tags, removed_tags).
+        """
+        current = [p for p in self.profiles
+                   if p.get("subscription") == group_id]
+        current_by_uri = {p.get("uri"): p for p in current}
+        new_uris = {p.get("uri") for p in parsed}
+        removed = [p["tag"] for uri, p in current_by_uri.items()
+                   if uri not in new_uris]
+        added = []
+        manual = {p.get("uri") for p in self.profiles
+                  if p.get("uri") is not None
+                  and p.get("subscription") is None}
+        for p in parsed:
+            uri = p.get("uri")
+            if uri in current_by_uri:
+                current_by_uri[uri]["protocol"] = p["protocol"]
+                current_by_uri[uri]["server"] = p["server"]
+                current_by_uri[uri]["port"] = p["port"]
+                continue
+            if uri is not None and uri in manual:
+                continue
+            p["enabled"] = True
+            p["subscription"] = group_id
+            self.profiles.append(p)
+            added.append(p["tag"])
+        self.profiles = [p for p in self.profiles
+                         if not (p.get("subscription") == group_id
+                                 and p["tag"] in removed)]
+        if self.active_tag in removed:
+            en = self.enabled()
+            self.active_tag = en[0]["tag"] if en else None
+        self.save()
+        return added, removed
+
     def remove(self, tag):
         self.profiles = [p for p in self.profiles if p["tag"] != tag]
         if self.active_tag == tag:
