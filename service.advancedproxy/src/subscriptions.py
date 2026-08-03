@@ -112,6 +112,9 @@ def parse_links(links):
     """Parse link lines into profiles with their original URI attached."""
     profiles, skipped = parsers.parse_lines(links)
     valid = [line for line in links if parsers.parse_uri(line) is not None]
+    if len(profiles) != len(valid):
+        raise ValueError("parse mismatch: %d profiles vs %d valid links"
+                         % (len(profiles), len(valid)))
     for profile, line in zip(profiles, valid):
         profile["uri"] = line
     return profiles, skipped
@@ -135,7 +138,9 @@ class SubscriptionStore(object):
             self.subscriptions = []
 
     def save(self):
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        parent = os.path.dirname(self.path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         tmp = self.path + ".tmp"
         with open(tmp, "w") as f:
             json.dump({"subscriptions": self.subscriptions}, f,

@@ -2331,14 +2331,11 @@ class TestSubscriptionDecode(unittest.TestCase):
         lines = self.subscriptions.decode_subscription(body)
         self.assertEqual(lines, [VLESS, TROJAN])
 
-    def test_text_wins_when_body_is_both_text_and_base64(self):
-        # Plain text with profile lines is taken as-is even when the body is
-        # also valid base64: text is tried first, so decoding must not fail.
-        import base64
-        text_body = (VLESS + "\n").encode()
-        # VLESS is not valid base64, so a plain-text body with profile lines
-        # must be returned as text, never rejected as bad base64.
-        lines = self.subscriptions.decode_subscription(text_body)
+    def test_text_body_with_profile_lines_is_used_as_is(self):
+        # A plain-text body with profile lines must decode as text. A true
+        # text-and-base64 dual body cannot exist here: base64's alphabet
+        # excludes ':' and '/', which every profile scheme requires.
+        lines = self.subscriptions.decode_subscription((VLESS + "\n").encode())
         self.assertEqual(lines, [VLESS])
 
     def test_text_and_base64_without_links_is_an_error(self):
