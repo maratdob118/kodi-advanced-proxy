@@ -143,6 +143,19 @@ duckdns local rule is preserved because bigping uses duckdns hostnames.
 `dns_query_strategy` (list). `strings.po` gains the labels. Both default
 empty.
 
+### 6. Torrent direct
+
+New boolean setting `direct_torrent` (default off). When enabled, both
+builders emit a routing rule that sends BitTorrent traffic straight to
+`direct`, bypassing the proxy:
+
+- sing-box: a `route.rules` entry `{"protocol": "bittorrent", "action":
+  "route", "outbound": "direct"}` placed before the private-IP rule.
+- Xray: a `routing.rules` entry `{"type": "field", "protocol":
+  ["bittorrent"], "outboundTag": "direct"}`.
+
+Setting label id added to `strings.po` and a toggle to `settings.xml`.
+
 ### Files touched
 
 - `service.advancedproxy/src/parsers.py` — new schemes, `parse_config`,
