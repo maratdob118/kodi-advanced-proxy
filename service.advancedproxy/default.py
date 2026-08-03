@@ -23,7 +23,7 @@ import xbmcaddon  # noqa: E402
 import xbmcgui  # noqa: E402
 import xbmcplugin  # noqa: E402
 
-from src import helpers, profiles  # noqa: E402
+from src import helpers, parsers, profiles  # noqa: E402
 
 ADDON_ID = helpers.ADDON_ID
 ADDON_NAME = "Advanced Proxy"
@@ -92,8 +92,10 @@ def _show_listing(handle):
     settings = _settings()
     mode = settings.get("mode", "urltest")
     latencies = helpers.measure_latencies(store.enabled(), timeout=2.0)
+    sub_store = _subscription_store()
     entries = helpers.build_directory_entries(store, mode, BASE_URL,
-                                              latencies=latencies)
+                                              latencies=latencies,
+                                              subscriptions=sub_store.groups())
 
     st = helpers.read_proxy_state()
     if st:
@@ -111,6 +113,15 @@ def _show_listing(handle):
         if kind == "profile":
             xbmcplugin.addDirectoryItem(handle, e["click_url"],
                                         _profile_item(e), isFolder=False)
+        elif kind == "subscription":
+            liz = xbmcgui.ListItem(label="[COLOR orange]%s[/COLOR] (%s)"
+                                   % (e["url"], e["status"]))
+            liz.setProperty("isPlayable", "false")
+            liz.addContextMenuItems([
+                (_ls(32227), "RunPlugin(%s)" % e["refresh_url"]),
+                (_ls(32228), "RunPlugin(%s)" % e["remove_url"]),
+            ])
+            xbmcplugin.addDirectoryItem(handle, e["url"], liz, isFolder=False)
         elif kind == "mode_toggle":
             mode_label = _ls(32108) if mode == "urltest" else _ls(32109)
             label = _ls(32220) % mode_label
@@ -201,6 +212,28 @@ def _action_activate(handle, tag):
     _finish_action(handle)
 
 
+def _action_activate_reachable(handle, tag):
+    """Activate TAG only when reachable; otherwise offer the next one."""
+    store = _store()
+    tag, err = helpers.pick_reachable(store.profiles, tag)
+    if err:
+        _notify(_ls(32218), error=True)
+        _finish_action(handle)
+        return
+    if _mode() == "manual":
+        if store.set_active(tag):
+            _notify(_ls(32212) % tag)
+        else:
+            _notify(_ls(32219), error=True)
+    else:
+        xbmcaddon.Addon(ADDON_ID).setSetting("mode", "1")
+        if store.set_active(tag):
+            _notify(_ls(32221) % tag)
+        else:
+            _notify(_ls(32219), error=True)
+    _finish_action(handle)
+
+
 def _action_toggle_mode(handle):
     addon = xbmcaddon.Addon(ADDON_ID)
     current = addon.getSetting("mode")
@@ -228,6 +261,63 @@ def _action_settings(handle):
     _finish_action(handle)
 
 
+def _subscription_store():
+    import subscriptions
+    return subscriptions.SubscriptionStore(
+        os.path.join(helpers.profile_dir(), "subscriptions.json"))
+
+
+def _action_sub_add(handle, url):
+    """Add a pasted link: a profile when it parses, else a subscription URL."""
+    store = _store()
+    if parsers.parse_uri(url) is not None:
+        p, err = store.add_uri(url)
+        if err:
+            _notify(_ls(32214), error=True)
+        else:
+            _notify(_ls(32213) % p["tag"])
+        _finish_action(handle)
+        return
+    if not parsers.is_subscription_url(url):
+        _notify(_ls(32214), error=True)
+        _finish_action(handle)
+        return
+    sub_store = _subscription_store()
+    group, err = sub_store.add(url, profile_store=store)
+    if err:
+        _notify(_ls(32229), error=True)
+    else:
+        _notify(_ls(32223) % url)
+    _finish_action(handle)
+
+
+def _action_sub_refresh(handle, group_id):
+    sub_store = _subscription_store()
+    _, _, err = sub_store.refresh(group_id, profile_store=_store())
+    if err:
+        _notify(_ls(32229), error=True)
+    else:
+        _notify(_ls(32224))
+    _finish_action(handle)
+
+
+def _action_sub_remove(handle, group_id):
+    sub_store = _subscription_store()
+    sub_store.remove(group_id, profile_store=_store())
+    _finish_action(handle)
+
+
+def _action_copy(handle, tag):
+    store = _store()
+    p = store.get(tag)
+    if p and p.get("uri"):
+        helpers.copy_to_clipboard(p["uri"])
+        _notify(_ls(32225) % tag)
+    else:
+        _notify(_ls(32219), error=True)
+    _finish_action(handle)
+
+
 def main():
     handle, params = helpers.parse_plugin_args(sys.argv)
     action = params.get("action", "")
@@ -240,13 +330,21 @@ def main():
     elif action == "clear":
         _action_clear(handle)
     elif action == "activate":
-        _action_activate(handle, params.get("tag", ""))
+        _action_activate_reachable(handle, params.get("tag", ""))
     elif action == "toggle_mode":
         _action_toggle_mode(handle)
     elif action == "toggle":
         _action_toggle(handle, params.get("tag", ""))
     elif action == "remove":
         _action_remove(handle, params.get("tag", ""))
+    elif action == "copy":
+        _action_copy(handle, params.get("tag", ""))
+    elif action == "sub_add":
+        _action_sub_add(handle, params.get("url", ""))
+    elif action == "sub_refresh":
+        _action_sub_refresh(handle, params.get("id", ""))
+    elif action == "sub_remove":
+        _action_sub_remove(handle, params.get("id", ""))
     elif action == "settings":
         _action_settings(handle)
     else:
