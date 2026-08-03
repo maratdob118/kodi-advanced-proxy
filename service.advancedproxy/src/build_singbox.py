@@ -239,17 +239,23 @@ def build_config(profiles, settings, active_tag=None):
     if settings.get("log_path"):
         log_cfg["output"] = settings["log_path"]
 
+    rules = [
+        {"action": "sniff"},
+        {"protocol": "dns", "action": "hijack-dns"},
+    ]
+    if settings.get("direct_torrent"):
+        rules.append({"protocol": "bittorrent", "action": "route",
+                      "outbound": "direct"})
+    rules.append({"ip_is_private": True, "action": "route",
+                  "outbound": "direct"})
+
     return {
         "log": log_cfg,
         "dns": _dns_block(settings),
         "inbounds": inbounds,
         "outbounds": outbounds + [chooser, {"type": "direct", "tag": "direct"}],
         "route": {
-            "rules": [
-                {"action": "sniff"},
-                {"protocol": "dns", "action": "hijack-dns"},
-                {"ip_is_private": True, "action": "route", "outbound": "direct"},
-            ],
+            "rules": rules,
             "final": "proxy",
             "auto_detect_interface": True,
             "default_domain_resolver": "local",

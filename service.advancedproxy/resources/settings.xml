@@ -201,6 +201,37 @@
                         <heading>32234</heading>
                     </control>
                 </setting>
+                <setting id="dns_server" type="string" label="32241" help="32241">
+                    <level>0</level>
+                    <default></default>
+                    <constraints>
+                        <allowempty>true</allowempty>
+                    </constraints>
+                    <control type="edit" format="string">
+                        <heading>32241</heading>
+                    </control>
+                </setting>
+                <setting id="dns_query_strategy" type="integer" label="32242" help="32242">
+                    <level>0</level>
+                    <default>0</default>
+                    <constraints>
+                        <options>
+                            <option label="32243">0</option>
+                            <option label="32244">1</option>
+                            <option label="32245">2</option>
+                            <option label="32246">3</option>
+                            <option label="32248">4</option>
+                        </options>
+                    </constraints>
+                    <control type="list" format="string">
+                        <heading>32242</heading>
+                    </control>
+                </setting>
+                <setting id="direct_torrent" type="boolean" label="32247" help="32247">
+                    <level>0</level>
+                    <default>false</default>
+                    <control type="toggle"/>
+                </setting>
             </group>
 
             <group id="2" label="32235">
