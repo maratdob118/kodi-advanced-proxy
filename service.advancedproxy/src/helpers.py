@@ -226,7 +226,32 @@ def measure_latencies(profiles, prober=None, timeout=2.0):
     return results
 
 
-def build_directory_entries(store, mode, base_url, latencies=None):
+def pick_reachable(profiles, preferred_tag, prober=None, timeout=2.0):
+    """Pick the first reachable enabled profile, preferring PREFERRED_TAG.
+
+    Returns (tag, None) when a reachable profile exists, else
+    (None, "all profiles unreachable").
+    """
+    prober = prober or _real_prober
+    candidates = [p for p in profiles if p.get("enabled", True)]
+    ordered = []
+    preferred = next((p for p in candidates if p["tag"] == preferred_tag),
+                     None)
+    if preferred is not None:
+        ordered.append(preferred)
+    ordered += [p for p in candidates if p is not preferred]
+    for p in ordered:
+        try:
+            ms = prober(p["server"], p["port"], timeout)
+        except (socket.error, OSError):
+            ms = None
+        if ms is not None:
+            return p["tag"], None
+    return None, "all profiles unreachable"
+
+
+def build_directory_entries(store, mode, base_url, latencies=None,
+                            subscriptions=None):
     latencies = latencies or {}
     entries = [{"kind": "mode_toggle", "mode": mode,
                 "url": base_url + "?action=toggle_mode"}]
@@ -246,6 +271,19 @@ def build_directory_entries(store, mode, base_url, latencies=None):
             "click_url": base_url + "?action=activate&" + tag_q,
             "toggle_url": base_url + "?action=toggle&" + tag_q,
             "remove_url": base_url + "?action=remove&" + tag_q,
+            "copy_url": base_url + "?action=copy&" + tag_q,
+        })
+    for group in subscriptions or ():
+        id_q = urllib.parse.urlencode({"id": group["id"]})
+        status = ("error: %s" % group["last_error"]) if group.get("last_error") \
+            else ("updated" if group.get("last_updated") else "never")
+        entries.append({
+            "kind": "subscription",
+            "id": group["id"],
+            "url": group["url"],
+            "status": status,
+            "refresh_url": base_url + "?action=sub_refresh&" + id_q,
+            "remove_url": base_url + "?action=sub_remove&" + id_q,
         })
     entries.append({"kind": "action", "action": "add", "str_id": 32200,
                     "url": base_url + "?action=add"})

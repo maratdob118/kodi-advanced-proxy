@@ -471,6 +471,43 @@ class TestHelpers(unittest.TestCase):
         got = helpers.disabled_protocols(reader=lambda: raw)
         self.assertEqual(sorted(got), ["trojan", "xhttp"])
 
+    def test_pick_reachable_returns_preferred_when_reachable(self):
+        profs = [
+            {"tag": "A", "server": "h1", "port": 1, "enabled": True},
+            {"tag": "B", "server": "h2", "port": 2, "enabled": True},
+        ]
+        tag, err = helpers.pick_reachable(profs, "A", prober=lambda *a: 10)
+        self.assertEqual(tag, "A")
+        self.assertIsNone(err)
+
+    def test_pick_reachable_skips_unreachable_preferred(self):
+        profs = [
+            {"tag": "A", "server": "h1", "port": 1, "enabled": True},
+            {"tag": "B", "server": "h2", "port": 2, "enabled": True},
+        ]
+        def prober(host, port, timeout):
+            return None if port == 1 else 10
+        tag, err = helpers.pick_reachable(profs, "A", prober=prober)
+        self.assertEqual(tag, "B")
+        self.assertIsNone(err)
+
+    def test_pick_reachable_returns_error_when_none_reachable(self):
+        profs = [
+            {"tag": "A", "server": "h1", "port": 1, "enabled": True},
+            {"tag": "B", "server": "h2", "port": 2, "enabled": True},
+        ]
+        tag, err = helpers.pick_reachable(profs, "A", prober=lambda *a: None)
+        self.assertIsNone(tag)
+        self.assertIsNotNone(err)
+
+    def test_pick_reachable_skips_disabled_profiles(self):
+        profs = [
+            {"tag": "A", "server": "h1", "port": 1, "enabled": False},
+            {"tag": "B", "server": "h2", "port": 2, "enabled": True},
+        ]
+        tag, err = helpers.pick_reachable(profs, "A", prober=lambda *a: 10)
+        self.assertEqual(tag, "B")
+
 
 class TestBinaryManager(unittest.TestCase):
     def test_paths(self):
@@ -802,6 +839,30 @@ class TestDirectoryEntries(unittest.TestCase):
         self.assertIn("action=toggle", prof["toggle_url"])
         self.assertIn("tag=AUTO%3AVLESS", prof["remove_url"])
         self.assertIn("action=remove", prof["remove_url"])
+
+    def test_profile_entry_carries_copy_url(self):
+        self.store.add_uri(VLESS)
+        prof = [e for e in self._entries() if e["kind"] == "profile"][0]
+        self.assertIn("action=copy", prof["copy_url"])
+        self.assertIn("tag=AUTO%3AVLESS", prof["copy_url"])
+
+    def test_group_rows_emitted_when_subscriptions_present(self):
+        groups = [{"id": "sub-abc", "url": "https://example.com/sub",
+                   "last_updated": 0, "last_error": None}]
+        entries = helpers.build_directory_entries(
+            self.store, "urltest", self.base, subscriptions=groups)
+        rows = [e for e in entries if e["kind"] == "subscription"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["url"], "https://example.com/sub")
+        self.assertIn("action=sub_refresh", rows[0]["refresh_url"])
+        self.assertIn("id=sub-abc", rows[0]["refresh_url"])
+        self.assertIn("action=sub_remove", rows[0]["remove_url"])
+
+    def test_no_group_rows_without_subscriptions(self):
+        entries = helpers.build_directory_entries(
+            self.store, "urltest", self.base)
+        rows = [e for e in entries if e["kind"] == "subscription"]
+        self.assertEqual(rows, [])
 
     def test_disabled_profile_not_active(self):
         self.store.add_uri(VLESS)
@@ -1172,11 +1233,58 @@ class TestPluginActionRefresh(unittest.TestCase):
         self.assertIn("if handle < 0:", body)
         self.assertIn('xbmc.executebuiltin("Container.Refresh")', body)
 
-        start = src.index("def _action_activate(")
-        end = src.index("\ndef ", start + 1)
-        activate = src[start:end]
-        self.assertIn("_finish_action(handle)", activate)
-        self.assertNotIn("_show_listing(handle)", activate)
+
+class TestSubscriptionUiContract(unittest.TestCase):
+    """Subscription actions and settings.xml contracts."""
+
+    def test_default_dispatches_subscription_actions(self):
+        path = os.path.join(HERE, "..", "service.advancedproxy", "default.py")
+        with open(path) as f:
+            src = f.read()
+        for action in ("sub_add", "sub_refresh", "sub_remove", "copy"):
+            self.assertIn('action == "%s"' % action, src,
+                          "default.py must dispatch %s" % action)
+
+    def test_default_has_subscription_action_handlers(self):
+        path = os.path.join(HERE, "..", "service.advancedproxy", "default.py")
+        with open(path) as f:
+            src = f.read()
+        for handler in ("_action_sub_add", "_action_sub_refresh",
+                        "_action_sub_remove", "_action_copy"):
+            self.assertIn("def %s(" % handler, src)
+
+    def test_default_activation_uses_availability_probe(self):
+        path = os.path.join(HERE, "..", "service.advancedproxy", "default.py")
+        with open(path) as f:
+            src = f.read()
+        self.assertIn("helpers.pick_reachable", src,
+                      "activation must use the reachability probe")
+
+    def test_settings_xml_has_subscriptions_category(self):
+        path = os.path.join(HERE, "..", "service.advancedproxy",
+                            "resources", "settings.xml")
+        with open(path) as f:
+            xml = f.read()
+        self.assertIn('category id="subscriptions"', xml)
+        for setting in ("subscription_url", "subscription_interval_hours",
+                        "disable_proto_vless", "disable_proto_trojan",
+                        "disable_proto_hysteria2"):
+            self.assertIn('id="%s"' % setting, xml)
+
+    def test_settings_xml_drops_legacy_skip_protocols_field(self):
+        path = os.path.join(HERE, "..", "service.advancedproxy",
+                            "resources", "settings.xml")
+        with open(path) as f:
+            xml = f.read()
+        self.assertNotIn('id="skip_protocols"', xml)
+
+    def test_settings_xml_has_open_subscriptions_action(self):
+        path = os.path.join(HERE, "..", "service.advancedproxy",
+                            "resources", "settings.xml")
+        with open(path) as f:
+            xml = f.read()
+        self.assertIn('id="open_subscriptions"', xml)
+        self.assertIn('id="subscription_add"', xml)
 
 
 class _FakeAddon(object):

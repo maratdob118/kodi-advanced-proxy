@@ -299,3 +299,71 @@ msgstr ""
 msgctxt "#32301"
 msgid "Point Kodi's network proxy at Advanced Proxy's actual port and restore previous values when the proxy stops."
 msgstr ""
+
+msgctxt "#32222"
+msgid "Subscriptions"
+msgstr ""
+
+msgctxt "#32223"
+msgid "Added subscription %s"
+msgstr ""
+
+msgctxt "#32224"
+msgid "Subscription updated"
+msgstr ""
+
+msgctxt "#32225"
+msgid "Copied %s"
+msgstr ""
+
+msgctxt "#32226"
+msgid "Subscriptions"
+msgstr ""
+
+msgctxt "#32227"
+msgid "Refresh subscription"
+msgstr ""
+
+msgctxt "#32228"
+msgid "Remove subscription"
+msgstr ""
+
+msgctxt "#32229"
+msgid "Subscription failed"
+msgstr ""
+
+msgctxt "#32232"
+msgid "Subscription URL"
+msgstr ""
+
+msgctxt "#32233"
+msgid "Add subscription"
+msgstr ""
+
+msgctxt "#32234"
+msgid "Refresh every N hours (0 = never)"
+msgstr ""
+
+msgctxt "#32235"
+msgid "Disabled protocols"
+msgstr ""
+
+msgctxt "#32236"
+msgid "Disable vless"
+msgstr ""
+
+msgctxt "#32237"
+msgid "Disable trojan"
+msgstr ""
+
+msgctxt "#32238"
+msgid "Disable hysteria2"
+msgstr ""
+
+msgctxt "#32239"
+msgid "Manage subscriptions"
+msgstr ""
+
+msgctxt "#32240"
+msgid "Open subscriptions"
+msgstr ""
