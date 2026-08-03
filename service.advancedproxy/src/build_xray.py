@@ -176,6 +176,13 @@ def build_config(profiles, settings, active_tag=None):
     mode = settings.get("mode", "urltest")
     rules = [{"type": "field", "ip": ["geoip:private"],
               "outboundTag": "direct"}]
+    if (settings.get("geoip_url") or "").strip():
+        rules.insert(0, {"type": "field", "ip": ["geoip:ru-blocked"],
+                         "outboundTag": "direct"})
+    if (settings.get("geosite_url") or "").strip():
+        rules.insert(0, {"type": "field",
+                         "domain": ["geosite:ru-blocked"],
+                         "outboundTag": "direct"})
     if settings.get("direct_torrent"):
         rules.insert(0, {"type": "field", "protocol": ["bittorrent"],
                          "outboundTag": "direct"})

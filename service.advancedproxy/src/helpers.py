@@ -31,6 +31,8 @@ _DEFAULTS = {
     "dns_server": "",
     "dns_query_strategy": "",
     "direct_torrent": "false",
+    "geoip_url": "https://github.com/runetfreedom/russia-blocked-geoip/releases/latest/download/geoip.dat",
+    "geosite_url": "",
     "log_level": "1",
     "binary_platform_override": "auto",
     "binary_custom_path": "",
@@ -90,6 +92,8 @@ def get_settings(reader=None):
         "dns_query_strategy": _DNS_STRATEGIES.get(str(s("dns_query_strategy")),
                                                   s("dns_query_strategy")),
         "direct_torrent": b("direct_torrent"),
+        "geoip_url": s("geoip_url"),
+        "geosite_url": s("geosite_url"),
         "log_level": _LOG_LEVELS.get(str(s("log_level")), "info"),
         "binary_platform_override": s("binary_platform_override"),
         "binary_custom_path": s("binary_custom_path"),
@@ -174,6 +178,50 @@ def profile_dir():
 
 def profiles_path():
     return os.path.join(profile_dir(), "profiles.json")
+
+
+def geo_databases_path():
+    """Paths where the geoip/geosite databases live in the profile dir."""
+    return {"geoip": os.path.join(profile_dir(), "geoip.dat"),
+            "geosite": os.path.join(profile_dir(), "geosite.dat")}
+
+
+def sync_geo_databases(settings, fetch=None, max_bytes=512 << 20):
+    """Download geoip/geosite databases into the profile dir.
+
+    SETTINGS carries geoip_url/geosite_url; empty URLs are skipped. Returns
+    {"geoip": status, "geosite": status} where status is "ok", "skipped" or
+    an error string. FETCH(url) -> bytes is injectable for tests.
+    """
+    fetch = fetch or _geo_fetch
+    result = {}
+    for key in ("geoip", "geosite"):
+        url = (settings.get("%s_url" % key) or "").strip()
+        if not url:
+            result[key] = "skipped"
+            continue
+        try:
+            body = fetch(url)
+            if len(body) > max_bytes:
+                result[key] = "too large"
+                continue
+            path = geo_databases_path()[key]
+            tmp = path + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(body)
+            os.replace(tmp, path)
+            result[key] = "ok"
+        except Exception as e:
+            result[key] = str(e)
+    return result
+
+
+def _geo_fetch(url, timeout=60):
+    """Download a geo database with a plain HTTP GET (no proxy)."""
+    import urllib.request
+    request = urllib.request.Request(url, headers={"User-Agent": "advancedproxy"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
 
 
 def config_path():
