@@ -2759,14 +2759,18 @@ class _FakeProfileStore(object):
         manual = [p for p in self.profiles if p.get("subscription") is None]
         manual_ids = {self._identity(p) for p in manual}
         manual_endpoints = {self._endpoint(p) for p in manual}
+        group_ids = {self._identity(p) for p in self.profiles
+                     if p.get("subscription") == group_id}
         added = 0
         for p in parsed:
-            if self._identity(p) in manual_ids or \
+            identity = self._identity(p)
+            if identity in manual_ids or identity in group_ids or \
                     self._endpoint(p) in manual_endpoints:
                 continue
             p["subscription"] = group_id
             self.profiles.append(p)
             self.added.append(p["tag"])
+            group_ids.add(identity)
             added += 1
         return added
 
@@ -2779,8 +2783,12 @@ class _FakeProfileStore(object):
         removed = [p["tag"] for identity, p in current_by_id.items()
                    if identity not in new_ids]
         added = []
+        manual_endpoints = {self._endpoint(p) for p in self.profiles
+                            if p.get("subscription") is None}
         for p in parsed:
             if self._identity(p) not in current_by_id:
+                if self._endpoint(p) in manual_endpoints:
+                    continue
                 p["subscription"] = group_id
                 self.profiles.append(p)
                 added.append(p["tag"])
