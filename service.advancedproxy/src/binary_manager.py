@@ -17,8 +17,8 @@ import zipfile
 import osarch
 import port_utils
 
-SINGBOX_VERSION = "1.13.14"
-XRAY_VERSION = "25.8.3"
+SINGBOX_VERSION = "1.13.15"
+XRAY_VERSION = "26.7.28"
 
 XRAY_ASSET = {
     "linux_x64": "Xray-linux-64.zip",

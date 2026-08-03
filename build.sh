@@ -16,8 +16,8 @@ set -ueo pipefail
 cd "$(dirname "$0")"
 
 ADDON="service.advancedproxy"
-SINGBOX_VERSION="1.13.14"
-XRAY_VERSION="25.8.3"
+SINGBOX_VERSION="1.13.15"
+XRAY_VERSION="26.7.28"
 DIST="dist"
 
 # addon.xml is the source of truth; --addon-version may override per run.
@@ -50,14 +50,14 @@ declare -A ASSET=(
 # GitHub release API assets[].digest values for the pinned sing-box release.
 # A version override is accepted only after its complete asset set is pinned here.
 declare -A SINGBOX_SHA256=(
-  ["1.13.14|linux-amd64.tar.gz"]="f48703461a15476951ac4967cdad339d986f4b8096b4eb3ff0829a500502d697"
-  ["1.13.14|linux-386.tar.gz"]="4d1c66260dfcb2120fde6c1c5ad125ce0f94769843c34aab4eef53c8d3bf3ae9"
-  ["1.13.14|linux-arm64.tar.gz"]="4742df6a4314e8ecc41736849fca6d73b8f9e91b6e8b06ee794ff17ba180579e"
-  ["1.13.14|linux-armv7-glibc.tar.gz"]="1d2338a20fcc92a0df0e68787f143e30ca767496eafc19b808ffcf68f3e40e58"
-  ["1.13.14|android-arm64.tar.gz"]="59a4d18a4108e2f2a1bd49ca547829112712123975092d4a4bf1f443b6f3d747"
-  ["1.13.14|windows-amd64.zip"]="f580782c6dd10f7691c66cea1d7c421813c5fbf7e305d1ee7ce0c3a40d196341"
-  ["1.13.14|darwin-amd64.tar.gz"]="5245d645e847f90bb708da74bc020ae078c28489690756419685c04f56b4e3bb"
-  ["1.13.14|darwin-arm64.tar.gz"]="73e8967b0fc08e17bce4263ca56ebc394822401a16497a1c4e02316c888202ab"
+  ["1.13.15|linux-amd64.tar.gz"]="a3a3ff223b23c3f4731d0a17cb0ef94c97ce257c70721a5b07dc7ca079203c9f"
+  ["1.13.15|linux-386.tar.gz"]="4180f34fcab227b1b6912e2a4e3cf9e6d484a7c885b5b0ea9d4cd45c7351527e"
+  ["1.13.15|linux-arm64.tar.gz"]="f0810bbb5722ae36635687c421019defcc8b328d31a0b3c287901f331747ca93"
+  ["1.13.15|linux-armv7-glibc.tar.gz"]="127a491352a444559167d519793c8cd34ae9614332217b6f1e03b92909719136"
+  ["1.13.15|android-arm64.tar.gz"]="ac81e54f88f3b58f67e265fe47805264e5cce03186b0301fc2164831665a2191"
+  ["1.13.15|windows-amd64.zip"]="599b296f6e57511d36d2a6f3011aed1a86fa98418578bbb06bd6dc241b5d8877"
+  ["1.13.15|darwin-amd64.tar.gz"]="817e04f90f941b718fedd965ff05bfe72abfcc62952888b01751a6dec5547e14"
+  ["1.13.15|darwin-arm64.tar.gz"]="3452d866834c9572389e5ca73e60d4ee45a7d5b79332188c9a9e533c5fd40a6d"
 )
 
 declare -A XRAY_ASSET=(
