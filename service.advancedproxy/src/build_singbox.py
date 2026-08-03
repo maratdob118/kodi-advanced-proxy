@@ -49,6 +49,22 @@ def _outbound(p):
         if tls:
             ob["tls"] = tls
         return ob
+    if proto == "vmess":
+        ob = {
+            "type": "vmess",
+            "tag": p["tag"],
+            "server": p["server"],
+            "server_port": p["port"],
+            "uuid": p["uuid"],
+            "network": p.get("network", "tcp"),
+            "security": p.get("security", "auto"),
+        }
+        if p.get("path"):
+            ob["transport"] = {"type": "ws", "path": p["path"]}
+        tls = _tls(p)
+        if tls:
+            ob["tls"] = tls
+        return ob
     if proto == "hysteria2":
         return {
             "type": "hysteria2",
@@ -71,6 +87,73 @@ def _outbound(p):
         if tls:
             ob["tls"] = tls
         return ob
+    if proto == "shadowsocks":
+        ob = {
+            "type": "shadowsocks",
+            "tag": p["tag"],
+            "server": p["server"],
+            "server_port": p["port"],
+            "method": p.get("method", "aes-256-gcm"),
+            "password": p.get("password", ""),
+        }
+        if p.get("plugin"):
+            ob["plugin"] = p["plugin"]
+        if p.get("plugin_opts"):
+            ob["plugin_opts"] = p["plugin_opts"]
+        return ob
+    if proto == "wireguard":
+        ob = {
+            "type": "wireguard",
+            "tag": p["tag"],
+            "server": p["server"],
+            "server_port": p["port"],
+            "local_address": [part.strip() for part in
+                              p.get("local_address", "").split(",")
+                              if part.strip()],
+            "private_key": p.get("private_key", ""),
+            "peer_public_key": p.get("public_key", ""),
+        }
+        if p.get("reserved"):
+            ob["reserved"] = p["reserved"]
+        return ob
+    if proto == "tuic":
+        ob = {
+            "type": "tuic",
+            "tag": p["tag"],
+            "server": p["server"],
+            "server_port": p["port"],
+            "uuid": p.get("uuid", ""),
+            "password": p.get("password", ""),
+        }
+        if p.get("congestion_control"):
+            ob["congestion_control"] = p["congestion_control"]
+        ob["tls"] = {"enabled": True,
+                     "server_name": p.get("sni", p["server"])}
+        return ob
+    if proto == "socks":
+        ob = {
+            "type": "socks",
+            "tag": p["tag"],
+            "server": p["server"],
+            "server_port": p["port"],
+        }
+        if p.get("username"):
+            ob["username"] = p["username"]
+        if p.get("password"):
+            ob["password"] = p["password"]
+        return ob
+    if proto == "http":
+        ob = {
+            "type": "http",
+            "tag": p["tag"],
+            "server": p["server"],
+            "server_port": p["port"],
+        }
+        if p.get("username"):
+            ob["username"] = p["username"]
+        if p.get("password"):
+            ob["password"] = p["password"]
+        return ob
     return None
 
 
@@ -88,6 +171,32 @@ def build_outbounds(profiles):
         except Exception as e:
             skipped.append((p.get("tag", "?"), "build-error:%s" % e))
     return outbounds, tags, skipped
+
+
+def _dns_block(settings):
+    """Normalized DNS block: user server (udp/doh/dot) + duckdns local rule."""
+    server = (settings.get("dns_server") or "").strip()
+    strategy = (settings.get("dns_query_strategy") or "").strip()
+    if server:
+        servers = [{"address": server}]
+    else:
+        servers = [
+            {"type": "udp", "tag": "remote", "server": "1.1.1.1"},
+            {"type": "udp", "tag": "local", "server": "77.88.8.8"},
+        ]
+    # The duckdns local rule needs a "local" entry in both shapes so
+    # route.default_domain_resolver stays valid.
+    if not any(s.get("tag") == "local" for s in servers):
+        servers.append({"type": "udp", "tag": "local", "server": "77.88.8.8"})
+    block = {
+        "servers": servers,
+        "rules": [{"domain_suffix": [".duckdns.org"], "server": "local"}],
+    }
+    if strategy:
+        block["strategy"] = strategy
+    if server:
+        block["final"] = "local"
+    return block
 
 
 def build_config(profiles, settings, active_tag=None):
@@ -128,14 +237,7 @@ def build_config(profiles, settings, active_tag=None):
 
     return {
         "log": log_cfg,
-        "dns": {
-            "servers": [
-                {"type": "udp", "tag": "remote", "server": "1.1.1.1"},
-                {"type": "udp", "tag": "local", "server": "77.88.8.8"},
-            ],
-            "rules": [{"domain_suffix": [".duckdns.org"], "server": "local"}],
-            "final": "remote",
-        },
+        "dns": _dns_block(settings),
         "inbounds": inbounds,
         "outbounds": outbounds + [chooser, {"type": "direct", "tag": "direct"}],
         "route": {

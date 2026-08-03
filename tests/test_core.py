@@ -476,6 +476,114 @@ class TestBuildSingbox(unittest.TestCase):
         ])
         self.assertEqual(cfg["route"]["final"], "proxy")
 
+    def _outbound_type(self, prof, expected_type):
+        cfg, skipped = build_singbox.build_config([prof], self._settings())
+        self.assertEqual(skipped, [])
+        obs = [o for o in cfg["outbounds"] if o["type"] == expected_type]
+        self.assertEqual(len(obs), 1)
+
+    def test_vmess_outbound(self):
+        prof = parsers.parse_uri(
+            "vmess://uuid-1@h1.example:443?security=auto#VM:1")
+        cfg, _ = build_singbox.build_config([prof], self._settings())
+        ob = [o for o in cfg["outbounds"] if o["type"] == "vmess"][0]
+        self.assertEqual(ob["uuid"], "uuid-1")
+        self.assertEqual(ob["server"], "h1.example")
+
+    def test_shadowsocks_outbound(self):
+        prof = parsers.parse_uri("ss://chacha20-ietf-poly1305:pw@h:8388#SS:1")
+        cfg, _ = build_singbox.build_config([prof], self._settings())
+        ob = [o for o in cfg["outbounds"] if o["type"] == "shadowsocks"][0]
+        self.assertEqual(ob["method"], "chacha20-ietf-poly1305")
+        self.assertEqual(ob["password"], "pw")
+
+    def test_ss2022_outbound(self):
+        prof = {"protocol": "shadowsocks", "tag": "ss2022",
+                "server": "h", "port": 8388,
+                "method": "2022-blake3-aes-128-gcm", "password": "p"}
+        cfg, _ = build_singbox.build_config([prof], self._settings())
+        ob = [o for o in cfg["outbounds"] if o["type"] == "shadowsocks"][0]
+        self.assertEqual(ob["method"], "2022-blake3-aes-128-gcm")
+
+    def test_wireguard_outbound(self):
+        prof = {"protocol": "wireguard", "tag": "wg", "server": "h",
+                "port": 51820, "private_key": "k", "public_key": "pk",
+                "local_address": "10.0.0.2/32,10.0.0.3/32"}
+        cfg, _ = build_singbox.build_config([prof], self._settings())
+        ob = [o for o in cfg["outbounds"] if o["type"] == "wireguard"][0]
+        self.assertEqual(ob["local_address"], ["10.0.0.2/32", "10.0.0.3/32"])
+        self.assertEqual(ob["private_key"], "k")
+        self.assertEqual(ob["peer_public_key"], "pk")
+
+    def test_tuic_outbound(self):
+        prof = parsers.parse_uri(
+            "tuic://uuid-3@h:443?password=pw&congestion_control=bbr#TU:1")
+        cfg, _ = build_singbox.build_config([prof], self._settings())
+        ob = [o for o in cfg["outbounds"] if o["type"] == "tuic"][0]
+        self.assertEqual(ob["uuid"], "uuid-3")
+        self.assertEqual(ob["password"], "pw")
+        self.assertEqual(ob["congestion_control"], "bbr")
+
+    def test_socks_outbound(self):
+        prof = parsers.parse_uri("socks://user:pass@h:1080#SOCKS:1")
+        cfg, _ = build_singbox.build_config([prof], self._settings())
+        ob = [o for o in cfg["outbounds"] if o["type"] == "socks"][0]
+        self.assertEqual(ob["username"], "user")
+        self.assertEqual(ob["password"], "pass")
+
+    def test_http_outbound(self):
+        prof = parsers.parse_uri("http://user:pass@h:8080#HTTP:1")
+        cfg, _ = build_singbox.build_config([prof], self._settings())
+        ob = [o for o in cfg["outbounds"] if o["type"] == "http"][0]
+        self.assertEqual(ob["username"], "user")
+        self.assertEqual(ob["password"], "pass")
+
+    # ----- DNS -------------------------------------------------------
+
+    def test_dns_udp_server_and_duckdns_rule(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_singbox.build_config(
+            profs, self._settings(dns_server="8.8.8.8"))
+        servers = cfg["dns"]["servers"]
+        self.assertIn({"address": "8.8.8.8"}, servers)
+        self.assertTrue(any(r.get("domain_suffix") == [".duckdns.org"]
+                            for r in cfg["dns"]["rules"]))
+
+    def test_dns_doh_server(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_singbox.build_config(
+            profs, self._settings(dns_server="https://dns.google/dns-query"))
+        self.assertIn({"address": "https://dns.google/dns-query"},
+                      cfg["dns"]["servers"])
+
+    def test_dns_dot_server(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_singbox.build_config(
+            profs, self._settings(dns_server="tls://8.8.8.8"))
+        self.assertIn({"address": "tls://8.8.8.8"}, cfg["dns"]["servers"])
+
+    def test_dns_query_strategy(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_singbox.build_config(
+            profs, self._settings(dns_server="8.8.8.8",
+                                  dns_query_strategy="prefer_ipv4"))
+        self.assertEqual(cfg["dns"]["strategy"], "prefer_ipv4")
+
+    def test_dns_empty_keeps_current_block(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_singbox.build_config(profs, self._settings())
+        self.assertTrue(any("1.1.1.1" == s.get("server")
+                            for s in cfg["dns"]["servers"]))
+        self.assertEqual(cfg["route"]["default_domain_resolver"], "local")
+
+    def test_dns_set_keeps_resolver_tag_valid(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_singbox.build_config(
+            profs, self._settings(dns_server="8.8.8.8"))
+        self.assertEqual(cfg["route"]["default_domain_resolver"], "local")
+        self.assertTrue(any(s.get("tag") == "local"
+                            for s in cfg["dns"]["servers"]))
+
     def test_skip_xhttp(self):
         profs, _ = parsers.parse_lines([VLESS, XHTTP])
         cfg, skipped = build_singbox.build_config(profs, self._settings())
