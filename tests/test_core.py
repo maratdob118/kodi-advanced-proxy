@@ -260,14 +260,15 @@ class TestProfileStore(unittest.TestCase):
         self.assertEqual(self.store.active_tag, "AUTO:VLESS")
 
     def test_add_subscription_profiles_skips_manual_dup_by_uri(self):
+        import subscriptions
         self.store.add_uri(VLESS)  # manual wins
-        parsed, _ = parsers.parse_lines([VLESS, HY2])
-        for p in parsed:
-            p["uri"] = p.get("uri") or ""
+        parsed, _ = subscriptions.parse_links([VLESS, HY2])
         n = self.store.add_subscription_profiles(parsed, "sub-abc123")
         self.assertEqual(n, 1)  # only HY2 added; VLESS skipped
         self.assertEqual(len(self.store.profiles), 2)
         self.assertIsNone(self.store.get("AUTO:VLESS").get("subscription"))
+        self.assertEqual(self.store.get("AUTO:Hysteria2")["subscription"],
+                         "sub-abc123")
 
     def test_remove_by_subscription_removes_only_that_group(self):
         self.store.add_uri(VLESS)  # manual
