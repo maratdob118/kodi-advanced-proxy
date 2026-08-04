@@ -89,10 +89,6 @@ class ProxySupervisor(object):
 
     def build_and_write_config(self):
         enabled = self.store.enabled()
-        if not enabled:
-            self.last_error = "no enabled profiles"
-            self.log(self.last_error, "warn")
-            return False
         try:
             engine = self.settings.get("engine", "sing-box")
             active = self.store.active_tag

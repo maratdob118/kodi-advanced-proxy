@@ -190,8 +190,6 @@ def _geo_rules(settings, geo_paths):
 
 def build_config(profiles, settings, active_tag=None):
     outbounds, tags, skipped = build_outbounds(profiles)
-    if not tags:
-        raise RuntimeError("no usable profiles for xray (%d skipped)" % len(skipped))
 
     mode = settings.get("mode", "urltest")
     rules = [{"type": "field", "ip": ["geoip:private"],
@@ -203,25 +201,30 @@ def build_config(profiles, settings, active_tag=None):
         rules.insert(0, rule)
     balancer = None
     observatory = None
-    if mode == "manual":
-        default = active_tag if active_tag in tags else tags[0]
-        rules.append({"type": "field", "network": "tcp,udp", "outboundTag": default})
-    else:
-        balancer = {
-            "tag": "proxy",
-            "selector": tags,
-            "strategy": {"type": "leastPing"},
-        }
-        observatory = {
-            "subjectSelector": tags,
-            "pingConfig": {
-                "destination": settings.get("test_url", "https://www.gstatic.com/generate_204"),
-                "interval": settings.get("urltest_interval", "3m"),
-                "timeout": "30s",
-                "sampling": 2,
-            },
-        }
-        rules.append({"type": "field", "network": "tcp,udp", "balancerTag": "proxy"})
+    final = "direct"
+    if tags:
+        if mode == "manual":
+            default = active_tag if active_tag in tags else tags[0]
+            rules.append({"type": "field", "network": "tcp,udp",
+                          "outboundTag": default})
+        else:
+            balancer = {
+                "tag": "proxy",
+                "selector": tags,
+                "strategy": {"type": "leastPing"},
+            }
+            observatory = {
+                "subjectSelector": tags,
+                "pingConfig": {
+                    "destination": settings.get("test_url", "https://www.gstatic.com/generate_204"),
+                    "interval": settings.get("urltest_interval", "3m"),
+                    "timeout": "30s",
+                    "sampling": 2,
+                },
+            }
+            rules.append({"type": "field", "network": "tcp,udp",
+                          "balancerTag": "proxy"})
+        final = "proxy"
 
     config = {
         "log": {"loglevel": settings.get("log_level", "info").replace("warn", "warning")},
@@ -247,7 +250,8 @@ def build_config(profiles, settings, active_tag=None):
             {"tag": "direct", "protocol": "freedom"},
             {"tag": "block", "protocol": "blackhole"},
         ],
-        "routing": {"domainStrategy": "IPIfNonMatch", "rules": rules},
+        "routing": {"domainStrategy": "IPIfNonMatch", "rules": rules,
+                    "final": final},
     }
     if balancer:
         config["routing"]["balancers"] = [balancer]

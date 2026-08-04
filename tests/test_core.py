@@ -765,8 +765,19 @@ class TestBuildXray(unittest.TestCase):
         self.assertEqual(outbounds, [])
         self.assertEqual(tags, [])
         self.assertTrue(any("tuic" in reason for _, reason in skipped))
-        with self.assertRaises(RuntimeError):
-            build_xray.build_config([prof], self._settings())
+        cfg, _ = build_xray.build_config([prof], self._settings())
+        self.assertEqual(cfg["routing"]["final"], "direct",
+                         "with no usable profiles the config must route direct")
+
+    def test_empty_profiles_route_direct(self):
+        for builder in (build_xray.build_config, build_singbox.build_config):
+            cfg, skipped = builder([], self._settings())
+            if builder is build_xray.build_config:
+                self.assertEqual(cfg["routing"]["final"], "direct")
+            else:
+                self.assertEqual(cfg["route"]["final"], "direct")
+                self.assertEqual([o["type"] for o in cfg["outbounds"]],
+                                 ["direct"])
 
     # ----- DNS -------------------------------------------------------
 
@@ -3462,6 +3473,24 @@ class TestSubscriptionStore(unittest.TestCase):
                           parsers.parse_uri(HY2)["tag"]])
         groups = self.store.groups()
         self.assertEqual(len(groups), 1)
+
+    def test_add_same_url_twice_replaces_profiles_not_duplicates(self):
+        body = (VLESS + "\n" + HY2).encode()
+        self.store.add("https://example.com/sub", fetcher=lambda url: body,
+                       profile_store=self.pstore)
+        self.assertEqual(len(self.pstore.profiles), 2)
+        self.assertEqual(len(self.pstore.added), 2)
+        group, err = self.store.add(
+            "https://example.com/sub", fetcher=lambda url: body,
+            profile_store=self.pstore)
+        self.assertIsNone(err)
+        self.assertEqual(len(self.pstore.profiles), 2,
+                         "re-adding the same URL must not duplicate profiles")
+        self.assertEqual(self.pstore.removed,
+                         [parsers.parse_uri(VLESS)["tag"],
+                          parsers.parse_uri(HY2)["tag"]],
+                         "the old group's profiles must be cascade-removed")
+        self.assertEqual(len(self.store.groups()), 1)
 
     def test_remove_cascades_to_profile_store(self):
         self.store.add("https://example.com/sub",

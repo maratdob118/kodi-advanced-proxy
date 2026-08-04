@@ -205,30 +205,33 @@ def _dns_block(settings):
 
 def build_config(profiles, settings, active_tag=None):
     outbounds, tags, skipped = build_outbounds(profiles)
-    if not tags:
-        raise RuntimeError("no usable profiles for sing-box (%d skipped)" % len(skipped))
 
     mode = settings.get("mode", "urltest")
-    if mode == "manual":
-        default = active_tag if active_tag in tags else tags[0]
-        chooser = {
-            "type": "selector",
-            "tag": "proxy",
-            "outbounds": tags,
-            "default": default,
-            "interrupt_exist_connections": bool(settings.get("interrupt_connections", True)),
-        }
+    if tags:
+        if mode == "manual":
+            default = active_tag if active_tag in tags else tags[0]
+            chooser = {
+                "type": "selector",
+                "tag": "proxy",
+                "outbounds": tags,
+                "default": default,
+                "interrupt_exist_connections": bool(settings.get("interrupt_connections", True)),
+            }
+        else:
+            chooser = {
+                "type": "urltest",
+                "tag": "proxy",
+                "outbounds": tags,
+                "url": settings.get("test_url", "https://www.gstatic.com/generate_204"),
+                "interval": settings.get("urltest_interval", "3m"),
+                "tolerance": int(settings.get("urltest_tolerance", 50)),
+                "idle_timeout": "5m",
+                "interrupt_exist_connections": False,
+            }
+        final = "proxy"
     else:
-        chooser = {
-            "type": "urltest",
-            "tag": "proxy",
-            "outbounds": tags,
-            "url": settings.get("test_url", "https://www.gstatic.com/generate_204"),
-            "interval": settings.get("urltest_interval", "3m"),
-            "tolerance": int(settings.get("urltest_tolerance", 50)),
-            "idle_timeout": "5m",
-            "interrupt_exist_connections": False,
-        }
+        chooser = None
+        final = "direct"
 
     inbounds = [{
         "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1",
@@ -255,10 +258,11 @@ def build_config(profiles, settings, active_tag=None):
         "log": log_cfg,
         "dns": _dns_block(settings),
         "inbounds": inbounds,
-        "outbounds": outbounds + [chooser, {"type": "direct", "tag": "direct"}],
+        "outbounds": (outbounds + [chooser] if chooser else []) + [
+            {"type": "direct", "tag": "direct"}],
         "route": {
             "rules": rules,
-            "final": "proxy",
+            "final": final,
             "auto_detect_interface": True,
             "default_domain_resolver": "local",
         },

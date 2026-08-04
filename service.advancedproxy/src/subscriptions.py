@@ -174,7 +174,8 @@ class SubscriptionStore(object):
         """Fetch URL once, create a group and add its profiles.
 
         Returns (group, error). On failure no group is persisted and the
-        profiles are untouched.
+        profiles are untouched. Adding the same URL again replaces the
+        previous group's profiles instead of duplicating them.
         """
         try:
             body = fetcher(url)
@@ -187,6 +188,8 @@ class SubscriptionStore(object):
         group = {"id": _group_id(url), "url": url,
                  "last_updated": self.now(), "last_error": None}
         if profile_store is not None:
+            if self.get(group["id"]) is not None:
+                profile_store.remove_by_subscription(group["id"])
             profile_store.add_subscription_profiles(parsed, group["id"])
         self.subscriptions = [g for g in self.subscriptions
                               if g["id"] != group["id"]]
