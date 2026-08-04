@@ -143,8 +143,11 @@ def _finish_action(handle):
 
 
 def _action_add(handle):
+    default = (xbmcaddon.Addon(ADDON_ID).getSetting("subscription_url")
+               or "").strip()
     kb = xbmcgui.Dialog().input(
-        _ls(32201), type=xbmcgui.INPUT_ALPHANUM)
+        _ls(32201), default, type=xbmcgui.INPUT_ALPHANUM)
+    _log("add dialog returned %d chars" % len(kb or ""))
     if kb:
         _action_sub_add(handle, kb)
     else:
@@ -254,8 +257,10 @@ def _action_sub_add(handle, url):
             _notify(_ls(32214), error=True)
             _finish_action(handle)
             return
+    _log("sub_add url (%d chars): %r" % (len(url), url[:120]))
     store = _store()
     if parsers.parse_uri(url) is not None:
+        _log("sub_add: url parses as a profile")
         p, err = store.add_uri(url)
         if err:
             _notify(_ls(32214), error=True)
@@ -264,14 +269,18 @@ def _action_sub_add(handle, url):
         _finish_action(handle)
         return
     if not parsers.is_subscription_url(url):
+        _log("sub_add: not a subscription URL")
         _notify(_ls(32214), error=True)
         _finish_action(handle)
         return
     sub_store = _subscription_store()
+    _log("sub_add: fetching subscription")
     group, err = sub_store.add(url, profile_store=store)
     if err:
+        _log("sub_add failed: %s" % err)
         _notify(_ls(32229), error=True)
     else:
+        _log("sub_add OK: %s (%d profiles)" % (group["id"], len(store.profiles)))
         _notify(_ls(32223) % url)
     _finish_action(handle)
 
