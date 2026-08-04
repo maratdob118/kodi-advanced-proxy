@@ -180,7 +180,7 @@ def main():
                          sup.effective_port)
 
     started = False
-    if settings.get("autostart") and sup.store.enabled():
+    if settings.get("autostart"):
         if sup.start():
             started = True
             _xbmc_log("proxy autostarted: %s on 127.0.0.1:%s (%s)"
@@ -229,7 +229,7 @@ def main():
                 sup.reload_profiles()
                 if sup.bin.is_running():
                     sup.restart()
-                elif new_settings.get("autostart") and sup.store.enabled():
+                elif new_settings.get("autostart"):
                     started = sup.start()
                     _sync_integration(new_settings, started)
 

@@ -2738,13 +2738,14 @@ class TestMainLifecycleWiring(unittest.TestCase):
                           ("sup.begin_shutdown",), ("sup.begin_shutdown",),
                           ("sup.stop",)])
 
-    def test_no_profiles_restores_stale_backup(self):
+    def test_no_profiles_starts_transparent_direct(self):
         manager = _FakeIntegrationManager(backup=True)
         _run_main([_settings()], manager, profiles_enabled=False)
         self.assertEqual(manager.calls,
-                         [("restore",), ("loop.abort",),
+                         [("sup.start",), ("ensure", INTEGRATION_HOST, 1081),
+                          ("loop.abort",),
                           ("sup.begin_shutdown",), ("sup.begin_shutdown",),
-                          ("sup.stop",)])
+                          ("restore",), ("sup.stop",)])
 
     def test_autostart_off_restores_stale_backup(self):
         manager = _FakeIntegrationManager(backup=True)
