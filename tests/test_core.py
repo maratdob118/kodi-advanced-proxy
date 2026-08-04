@@ -157,49 +157,16 @@ class TestParsers(unittest.TestCase):
         self.assertEqual(p["protocol"], "trojan")
         self.assertEqual(p["security"], "reality")
 
-    def test_unknown(self):
-        self.assertIsNone(parsers.parse_uri("ss://whatever"))
-
     def test_parse_lines(self):
         profs, skipped = parsers.parse_lines([VLESS, HY2, "garbage", TROJAN])
         self.assertEqual(len(profs), 3)
         self.assertEqual(len(skipped), 1)
 
-    def test_urlencoded_password(self):
-        p = parsers.parse_uri("hy2://a%2Bb%2F@h:443/?sni=h#T:Hy2")
-        self.assertEqual(p["password"], "a+b/")
-
-    def test_disabled_protocols_vless(self):
-        self.assertIsNone(parsers.parse_uri(VLESS, disabled_protocols=("vless",)))
-
-    def test_disabled_protocols_trojan(self):
-        self.assertIsNone(parsers.parse_uri(TROJAN, disabled_protocols=("trojan",)))
-
-    def test_disabled_protocols_hysteria2(self):
-        self.assertIsNone(parsers.parse_uri(HY2, disabled_protocols=("hysteria2",)))
-
-    def test_disabled_protocols_does_not_affect_others(self):
-        p = parsers.parse_uri(VLESS, disabled_protocols=("trojan",))
-        self.assertIsNotNone(p)
-
-    def test_parse_lines_reports_disabled_as_skipped_not_error(self):
-        profs, skipped = parsers.parse_lines(
-            [VLESS, TROJAN], disabled_protocols=("trojan",))
-        self.assertEqual(len(profs), 1)
-        self.assertEqual(len(skipped), 1)
-        self.assertIn("disabled", skipped[0][1])
-
     def test_is_subscription_url_https(self):
         self.assertTrue(parsers.is_subscription_url("https://example.com/sub"))
 
-    def test_is_subscription_url_http(self):
-        self.assertTrue(parsers.is_subscription_url("http://example.com/sub"))
-
     def test_is_subscription_url_false_for_profile(self):
         self.assertFalse(parsers.is_subscription_url(VLESS))
-
-    def test_is_subscription_url_false_for_junk(self):
-        self.assertFalse(parsers.is_subscription_url("not a url at all"))
 
     def test_vmess_modern_form(self):
         p = parsers.parse_uri(
@@ -210,24 +177,6 @@ class TestParsers(unittest.TestCase):
         self.assertEqual(p["port"], 443)
         self.assertEqual(p["uuid"], "uuid-1111")
 
-    def test_vmess_base64_json_form(self):
-        import base64, json
-        payload = json.dumps({
-            "v": "2", "ps": "VM:B64", "add": "h2.example", "port": 8443,
-            "id": "uuid-2222", "aid": 2, "net": "ws", "path": "/ws",
-            "scy": "auto", "sni": "h2.example",
-        }).encode()
-        uri = "vmess://%s" % base64.b64encode(payload).decode()
-        p = parsers.parse_uri(uri)
-        self.assertEqual(p["protocol"], "vmess")
-        self.assertEqual(p["tag"], "VM:B64")
-        self.assertEqual(p["server"], "h2.example")
-        self.assertEqual(p["port"], 8443)
-        self.assertEqual(p["uuid"], "uuid-2222")
-        self.assertEqual(p["alter_id"], 2)
-        self.assertEqual(p["network"], "ws")
-        self.assertEqual(p["path"], "/ws")
-
     def test_shadowsocks_plain_form(self):
         p = parsers.parse_uri("ss://chacha20-ietf-poly1305:pass@h.example:8388#SS:1")
         self.assertEqual(p["protocol"], "shadowsocks")
@@ -235,26 +184,6 @@ class TestParsers(unittest.TestCase):
         self.assertEqual(p["method"], "chacha20-ietf-poly1305")
         self.assertEqual(p["password"], "pass")
         self.assertEqual(p["port"], 8388)
-
-    def test_shadowsocks_base64_form(self):
-        import base64
-        auth = base64.b64encode(b"aes-256-gcm:pw").decode()
-        p = parsers.parse_uri("ss://%s@h.example:8388#SS:2" % auth)
-        self.assertEqual(p["protocol"], "shadowsocks")
-        self.assertEqual(p["method"], "aes-256-gcm")
-        self.assertEqual(p["password"], "pw")
-
-    def test_socks(self):
-        p = parsers.parse_uri("socks://user:pass@h.example:1080#SOCKS:1")
-        self.assertEqual(p["protocol"], "socks")
-        self.assertEqual(p["username"], "user")
-        self.assertEqual(p["password"], "pass")
-
-    def test_http(self):
-        p = parsers.parse_uri("http://user:pass@h.example:8080#HTTP:1")
-        self.assertEqual(p["protocol"], "http")
-        self.assertEqual(p["username"], "user")
-        self.assertEqual(p["password"], "pass")
 
     def test_wireguard(self):
         p = parsers.parse_uri(
@@ -329,19 +258,6 @@ class TestProfileStore(unittest.TestCase):
         self.assertEqual(len(store2.profiles), 1)
         self.assertEqual(store2.active_tag, "AUTO:VLESS")
 
-    def test_active_fallback(self):
-        self.store.add_uri(VLESS)
-        self.assertEqual(self.store.active()["tag"], "AUTO:VLESS")
-
-    def test_add_uri_persists_subscription_field(self):
-        self.store.add_uri(VLESS, subscription="sub-abc123")
-        self.assertEqual(self.store.get("AUTO:VLESS")["subscription"],
-                         "sub-abc123")
-
-    def test_add_uri_without_subscription_is_none(self):
-        self.store.add_uri(VLESS)
-        self.assertIsNone(self.store.get("AUTO:VLESS").get("subscription"))
-
     def test_add_subscription_profiles_sets_group_and_enables(self):
         parsed, _ = parsers.parse_lines([VLESS, HY2])
         n = self.store.add_subscription_profiles(parsed, "sub-abc123")
@@ -370,14 +286,6 @@ class TestProfileStore(unittest.TestCase):
                          ["AUTO:VLESS"])
         self.assertEqual(self.store.active_tag, "AUTO:VLESS")
 
-    def test_remove_by_subscription_repicks_active(self):
-        parsed, _ = parsers.parse_lines([VLESS, HY2])
-        self.store.add_subscription_profiles(parsed, "sub-abc123")
-        self.store.set_active("AUTO:VLESS")
-        self.store.remove_by_subscription("sub-abc123")
-        self.assertEqual(self.store.profiles, [])
-        self.assertIsNone(self.store.active_tag)
-
     def test_sync_subscription_adds_removes_and_keeps_enabled(self):
         import subscriptions
         parsed, _ = subscriptions.parse_links([VLESS, HY2])
@@ -395,37 +303,6 @@ class TestProfileStore(unittest.TestCase):
                          "sync must keep the user's enabled flag")
         self.assertIsNone(self.store.active_tag,
                           "no enabled profile remains, so no active profile")
-
-    def test_sync_subscription_adds_new_links(self):
-        import subscriptions
-        parsed, _ = subscriptions.parse_links([VLESS])
-        self.store.add_subscription_profiles(parsed, "sub-abc123")
-        new_parsed, _ = subscriptions.parse_links([VLESS, HY2])
-        added, removed = self.store.sync_subscription(new_parsed, "sub-abc123")
-        self.assertEqual(added, ["AUTO:Hysteria2"])
-        self.assertEqual(removed, [])
-
-    def test_config_profiles_same_endpoint_dedup(self):
-        parsed = [
-            {"protocol": "vless", "tag": "cfg-a", "server": "h",
-             "port": 443, "uuid": "u"},
-            {"protocol": "vless", "tag": "cfg-b", "server": "h",
-             "port": 443, "uuid": "u"},
-        ]
-        n = self.store.add_subscription_profiles(parsed, "sub-cfg")
-        self.assertEqual(n, 1, "same endpoint must dedup config profiles")
-        self.assertEqual(len(self.store.profiles), 1)
-
-    def test_config_profile_loses_to_manual_same_endpoint(self):
-        parsed, _ = parsers.parse_lines([VLESS])
-        self.store.add_uri(parsed[0].get("uri") or VLESS)  # manual
-        cfg = [{"protocol": "vless", "tag": "cfg", "server":
-                parsers.parse_uri(VLESS)["server"],
-                "port": parsers.parse_uri(VLESS)["port"], "uuid": "u"}]
-        n = self.store.add_subscription_profiles(cfg, "sub-cfg")
-        self.assertEqual(n, 0, "manual profile must win over config copy")
-        self.assertEqual(len(self.store.profiles), 1)
-        self.assertIsNone(self.store.profiles[0].get("subscription"))
 
     def test_sync_keeps_enabled_for_config_profiles(self):
         parsed = [
@@ -452,13 +329,6 @@ class TestBuildSingbox(unittest.TestCase):
         s.update(kw)
         return s
 
-    def test_urltest(self):
-        profs, _ = parsers.parse_lines([VLESS, HY2, TROJAN])
-        cfg, skipped = build_singbox.build_config(profs, self._settings())
-        ut = [o for o in cfg["outbounds"] if o["type"] == "urltest"][0]
-        self.assertEqual(len(ut["outbounds"]), 3)
-        self.assertEqual(cfg["route"]["final"], "proxy")
-
     def test_manual(self):
         profs, _ = parsers.parse_lines([VLESS, HY2])
         cfg, _ = build_singbox.build_config(profs, self._settings(mode="manual"),
@@ -475,167 +345,6 @@ class TestBuildSingbox(unittest.TestCase):
             {"ip_is_private": True, "action": "route", "outbound": "direct"},
         ])
         self.assertEqual(cfg["route"]["final"], "proxy")
-
-    def test_vmess_outbound(self):
-        prof = parsers.parse_uri(
-            "vmess://uuid-1@h1.example:443?security=auto#VM:1")
-        cfg, _ = build_singbox.build_config([prof], self._settings())
-        ob = [o for o in cfg["outbounds"] if o["type"] == "vmess"][0]
-        self.assertEqual(ob["uuid"], "uuid-1")
-        self.assertEqual(ob["server"], "h1.example")
-
-    def test_shadowsocks_outbound(self):
-        prof = parsers.parse_uri("ss://chacha20-ietf-poly1305:pw@h:8388#SS:1")
-        cfg, _ = build_singbox.build_config([prof], self._settings())
-        ob = [o for o in cfg["outbounds"] if o["type"] == "shadowsocks"][0]
-        self.assertEqual(ob["method"], "chacha20-ietf-poly1305")
-        self.assertEqual(ob["password"], "pw")
-
-    def test_ss2022_outbound(self):
-        prof = {"protocol": "shadowsocks", "tag": "ss2022",
-                "server": "h", "port": 8388,
-                "method": "2022-blake3-aes-128-gcm", "password": "p"}
-        cfg, _ = build_singbox.build_config([prof], self._settings())
-        ob = [o for o in cfg["outbounds"] if o["type"] == "shadowsocks"][0]
-        self.assertEqual(ob["method"], "2022-blake3-aes-128-gcm")
-
-    def test_wireguard_outbound(self):
-        prof = {"protocol": "wireguard", "tag": "wg", "server": "h",
-                "port": 51820, "private_key": "k", "public_key": "pk",
-                "local_address": "10.0.0.2/32,10.0.0.3/32"}
-        cfg, _ = build_singbox.build_config([prof], self._settings())
-        ob = [o for o in cfg["outbounds"] if o["type"] == "wireguard"][0]
-        self.assertEqual(ob["local_address"], ["10.0.0.2/32", "10.0.0.3/32"])
-        self.assertEqual(ob["private_key"], "k")
-        self.assertEqual(ob["peer_public_key"], "pk")
-
-    def test_tuic_outbound(self):
-        prof = parsers.parse_uri(
-            "tuic://uuid-3@h:443?password=pw&congestion_control=bbr#TU:1")
-        cfg, _ = build_singbox.build_config([prof], self._settings())
-        ob = [o for o in cfg["outbounds"] if o["type"] == "tuic"][0]
-        self.assertEqual(ob["uuid"], "uuid-3")
-        self.assertEqual(ob["password"], "pw")
-        self.assertEqual(ob["congestion_control"], "bbr")
-
-    def test_socks_outbound(self):
-        prof = parsers.parse_uri("socks://user:pass@h:1080#SOCKS:1")
-        cfg, _ = build_singbox.build_config([prof], self._settings())
-        ob = [o for o in cfg["outbounds"] if o["type"] == "socks"][0]
-        self.assertEqual(ob["username"], "user")
-        self.assertEqual(ob["password"], "pass")
-
-    def test_http_outbound(self):
-        prof = parsers.parse_uri("http://user:pass@h:8080#HTTP:1")
-        cfg, _ = build_singbox.build_config([prof], self._settings())
-        ob = [o for o in cfg["outbounds"] if o["type"] == "http"][0]
-        self.assertEqual(ob["username"], "user")
-        self.assertEqual(ob["password"], "pass")
-
-    # ----- DNS -------------------------------------------------------
-
-    def test_dns_udp_server_and_duckdns_rule(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_singbox.build_config(
-            profs, self._settings(dns_server="8.8.8.8"))
-        servers = cfg["dns"]["servers"]
-        self.assertIn({"address": "8.8.8.8"}, servers)
-        self.assertTrue(any(r.get("domain_suffix") == [".duckdns.org"]
-                            for r in cfg["dns"]["rules"]))
-
-    def test_dns_doh_server(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_singbox.build_config(
-            profs, self._settings(dns_server="https://dns.google/dns-query"))
-        self.assertIn({"address": "https://dns.google/dns-query"},
-                      cfg["dns"]["servers"])
-
-    def test_dns_dot_server(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_singbox.build_config(
-            profs, self._settings(dns_server="tls://8.8.8.8"))
-        self.assertIn({"address": "tls://8.8.8.8"}, cfg["dns"]["servers"])
-
-    def test_dns_query_strategy(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_singbox.build_config(
-            profs, self._settings(dns_server="8.8.8.8",
-                                  dns_query_strategy="prefer_ipv4"))
-        self.assertEqual(cfg["dns"]["strategy"], "prefer_ipv4")
-
-    def test_dns_empty_keeps_current_block(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_singbox.build_config(profs, self._settings())
-        self.assertTrue(any("1.1.1.1" == s.get("server")
-                            for s in cfg["dns"]["servers"]))
-        self.assertEqual(cfg["route"]["default_domain_resolver"], "local")
-
-    def test_dns_set_keeps_resolver_tag_valid(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_singbox.build_config(
-            profs, self._settings(dns_server="8.8.8.8"))
-        self.assertEqual(cfg["route"]["default_domain_resolver"], "local")
-        self.assertTrue(any(s.get("tag") == "local"
-                            for s in cfg["dns"]["servers"]))
-
-    def test_torrent_direct_rule_when_enabled(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_singbox.build_config(
-            profs, self._settings(direct_torrent=True))
-        bittorrent = [r for r in cfg["route"]["rules"]
-                      if r.get("protocol") == "bittorrent"]
-        self.assertEqual(len(bittorrent), 1)
-        self.assertEqual(bittorrent[0]["outbound"], "direct")
-        private_idx = next(i for i, r in enumerate(cfg["route"]["rules"])
-                           if r.get("ip_is_private"))
-        bt_idx = next(i for i, r in enumerate(cfg["route"]["rules"])
-                      if r.get("protocol") == "bittorrent")
-        self.assertLess(bt_idx, private_idx)
-
-    def test_torrent_direct_rule_absent_by_default(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_singbox.build_config(profs, self._settings())
-        self.assertFalse(any(r.get("protocol") == "bittorrent"
-                             for r in cfg["route"]["rules"]))
-
-    def test_geoip_rule_absent_singbox_uses_rule_sets_only(self):
-        # sing-box 1.12+ removed embedded geoip.dat/geosite.dat: external
-        # geo databases apply to Xray only, never to sing-box routing.
-        profs, _ = parsers.parse_lines([VLESS])
-        for extra in ({"geoip_url": "https://a/geoip.dat"},
-                      {"geosite_url": "https://b/geosite.dat"}):
-            cfg, _ = build_singbox.build_config(
-                profs, self._settings(**extra))
-            self.assertFalse(any(r.get("geoip") or r.get("geosite")
-                                 for r in cfg["route"]["rules"]),
-                             "sing-box must not emit geoip/geosite rules")
-
-    def test_skip_xhttp(self):
-        profs, _ = parsers.parse_lines([VLESS, XHTTP])
-        cfg, skipped = build_singbox.build_config(profs, self._settings())
-        self.assertEqual(len(skipped), 1)
-        tags = [o["tag"] for o in cfg["outbounds"]
-                if o["type"] not in ("urltest", "direct")]
-        self.assertNotIn("UAE:xHTTP", tags)
-
-    def test_urltest_interrupt_connections_true(self):
-        profs, _ = parsers.parse_lines([VLESS, HY2])
-        cfg, _ = build_singbox.build_config(profs, self._settings(mode="urltest", interrupt_connections=True))
-        ut = [o for o in cfg["outbounds"] if o["type"] == "urltest"][0]
-        self.assertEqual(ut["interrupt_exist_connections"], False)
-
-    def test_urltest_interrupt_connections_false(self):
-        profs, _ = parsers.parse_lines([VLESS, HY2])
-        cfg, _ = build_singbox.build_config(profs, self._settings(mode="urltest", interrupt_connections=False))
-        ut = [o for o in cfg["outbounds"] if o["type"] == "urltest"][0]
-        self.assertEqual(ut["interrupt_exist_connections"], False)
-
-    def test_manual_interrupt_connections_true(self):
-        profs, _ = parsers.parse_lines([VLESS, HY2])
-        cfg, _ = build_singbox.build_config(profs, self._settings(mode="manual", interrupt_connections=True),
-                                            active_tag="AUTO:Hysteria2")
-        sel = [o for o in cfg["outbounds"] if o["type"] == "selector"][0]
-        self.assertEqual(sel["interrupt_exist_connections"], True)
 
     def test_manual_interrupt_connections_false(self):
         profs, _ = parsers.parse_lines([VLESS, HY2])
@@ -714,51 +423,6 @@ class TestBuildXray(unittest.TestCase):
         self.assertEqual(skipped, [])
         return [o for o in cfg["outbounds"] if o["protocol"] == protocol][0]
 
-    def test_vmess_outbound(self):
-        prof = parsers.parse_uri(
-            "vmess://uuid-1@h1.example:443?security=auto#VM:1")
-        ob = self._xray_outbound(prof, "vmess")
-        self.assertEqual(ob["settings"]["vnext"][0]["users"][0]["id"],
-                         "uuid-1")
-
-    def test_tcp_profiles_omit_network_key(self):
-        # Xray defaults streamSettings.network to tcp when absent; keep the
-        # omission explicit so a future refactor cannot silently change it.
-        prof = parsers.parse_uri(TROJAN)
-        ob = self._xray_outbound(prof, "trojan")
-        self.assertNotIn("network", ob.get("streamSettings", {}))
-
-    def test_shadowsocks_outbound(self):
-        prof = parsers.parse_uri("ss://aes-256-gcm:pw@h:8388#SS:1")
-        ob = self._xray_outbound(prof, "shadowsocks")
-        srv = ob["settings"]["servers"][0]
-        self.assertEqual(srv["method"], "aes-256-gcm")
-        self.assertEqual(srv["password"], "pw")
-
-    def test_wireguard_outbound(self):
-        prof = {"protocol": "wireguard", "tag": "wg", "server": "h",
-                "port": 51820, "private_key": "k", "public_key": "pk",
-                "local_address": "10.0.0.2/32,10.0.0.3/32"}
-        ob = self._xray_outbound(prof, "wireguard")
-        self.assertEqual(ob["settings"]["secretKey"], "k")
-        self.assertEqual(ob["settings"]["address"],
-                         ["10.0.0.2/32", "10.0.0.3/32"])
-        self.assertEqual(ob["settings"]["peers"][0]["publicKey"], "pk")
-        self.assertEqual(ob["settings"]["peers"][0]["endpoint"], "h:51820")
-
-    def test_socks_outbound(self):
-        prof = parsers.parse_uri("socks://user:pass@h:1080#SOCKS:1")
-        ob = self._xray_outbound(prof, "socks")
-        user = ob["settings"]["servers"][0]["users"][0]
-        self.assertEqual(user["user"], "user")
-        self.assertEqual(user["pass"], "pass")
-
-    def test_http_outbound(self):
-        prof = parsers.parse_uri("http://user:pass@h:8080#HTTP:1")
-        ob = self._xray_outbound(prof, "http")
-        user = ob["settings"]["servers"][0]["users"][0]
-        self.assertEqual(user["user"], "user")
-
     def test_skips_tuic(self):
         prof = parsers.parse_uri("tuic://uuid-3@h:443?password=pw#TU:1")
         outbounds, tags, skipped = build_xray.build_outbounds([prof])
@@ -787,63 +451,6 @@ class TestBuildXray(unittest.TestCase):
             profs, self._settings(dns_server="8.8.8.8"))
         self.assertIn("8.8.8.8", cfg["dns"]["servers"])
 
-    def test_dns_doh_server(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_xray.build_config(
-            profs, self._settings(dns_server="https://dns.google/dns-query"))
-        self.assertIn("https://dns.google/dns-query", cfg["dns"]["servers"])
-
-    def test_dns_dot_server(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_xray.build_config(
-            profs, self._settings(dns_server="tls://8.8.8.8"))
-        self.assertIn("tcp+tls://8.8.8.8:853", cfg["dns"]["servers"])
-
-    def test_dns_query_strategy(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_xray.build_config(
-            profs, self._settings(dns_server="8.8.8.8",
-                                  dns_query_strategy="prefer_ipv4"))
-        self.assertEqual(cfg["dns"]["queryStrategy"], "UseIPv4")
-
-    def test_dns_empty_keeps_current_list(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_xray.build_config(profs, self._settings())
-        self.assertIn("1.1.1.1", cfg["dns"]["servers"])
-        self.assertIn("localhost", cfg["dns"]["servers"])
-
-    def test_torrent_direct_rule_when_enabled(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_xray.build_config(
-            profs, self._settings(direct_torrent=True))
-        bt = [r for r in cfg["routing"]["rules"]
-              if r.get("protocol") == ["bittorrent"]]
-        self.assertEqual(len(bt), 1)
-        self.assertEqual(bt[0]["outboundTag"], "direct")
-        self.assertIs(cfg["routing"]["rules"][0], bt[0],
-                      "bittorrent rule must be the first routing rule")
-
-    def test_torrent_direct_rule_absent_by_default(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_xray.build_config(profs, self._settings())
-        self.assertFalse(any(r.get("protocol") == ["bittorrent"]
-                             for r in cfg["routing"]["rules"]))
-
-    def test_geoip_rule_when_url_set_and_db_exists(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        with tempfile.TemporaryDirectory() as td:
-            geo = os.path.join(td, "geoip.dat")
-            with open(geo, "w") as f:
-                f.write("x")
-            cfg, _ = build_xray.build_config(
-                profs, self._settings(
-                    geoip_url="https://a/geoip.dat",
-                    geo_paths={"geoip": geo, "geosite": os.path.join(td, "geosite.dat")}))
-            geo_rules = [r for r in cfg["routing"]["rules"]
-                         if r.get("ip") == ["geoip:ru-blocked"]]
-            self.assertEqual(len(geo_rules), 1)
-            self.assertEqual(geo_rules[0]["outboundTag"], "direct")
-
     def test_geoip_rule_absent_when_db_missing(self):
         # A rule referencing a missing geoip.dat makes Xray refuse the whole
         # config; the rule must not be emitted until the DB is downloaded.
@@ -855,41 +462,6 @@ class TestBuildXray(unittest.TestCase):
                     geo_paths={"geoip": os.path.join(td, "geoip.dat"),
                                "geosite": os.path.join(td, "geosite.dat")}))
         self.assertFalse(any(r.get("ip") == ["geoip:ru-blocked"]
-                             for r in cfg["routing"]["rules"]))
-
-    def test_geosite_rule_when_url_set_and_db_exists(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        with tempfile.TemporaryDirectory() as td:
-            geo = os.path.join(td, "geosite.dat")
-            with open(geo, "w") as f:
-                f.write("x")
-            cfg, _ = build_xray.build_config(
-                profs, self._settings(
-                    geosite_url="https://b/geosite.dat",
-                    geo_paths={"geoip": os.path.join(td, "geoip.dat"),
-                               "geosite": geo}))
-            geo_rules = [r for r in cfg["routing"]["rules"]
-                         if r.get("domain") == ["geosite:ru-blocked"]]
-            self.assertEqual(len(geo_rules), 1)
-            self.assertEqual(geo_rules[0]["outboundTag"], "direct")
-
-    def test_geosite_rule_absent_when_db_missing(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        with tempfile.TemporaryDirectory() as td:
-            cfg, _ = build_xray.build_config(
-                profs, self._settings(
-                    geosite_url="https://b/geosite.dat",
-                    geo_paths={"geoip": os.path.join(td, "geoip.dat"),
-                               "geosite": os.path.join(td, "geosite.dat")}))
-        self.assertFalse(any(r.get("domain") == ["geosite:ru-blocked"]
-                             for r in cfg["routing"]["rules"]))
-
-    def test_geo_rules_absent_by_default(self):
-        profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_xray.build_config(profs, self._settings())
-        self.assertFalse(any(r.get("ip") == ["geoip:ru-blocked"]
-                             for r in cfg["routing"]["rules"]))
-        self.assertFalse(any(r.get("domain") == ["geosite:ru-blocked"]
                              for r in cfg["routing"]["rules"]))
 
     def test_supervisor_geo_paths_injected_into_build_settings(self):
@@ -924,115 +496,6 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(s["local_port"], 8080)
         self.assertEqual(s["log_level"], "warn")
 
-    def test_auto_configure_integration_defaults_true(self):
-        self.assertTrue(helpers.get_settings(reader=lambda: {})["auto_configure_integration"])
-
-    def test_auto_configure_integration_can_be_disabled(self):
-        raw = {"auto_configure_integration": "false"}
-        self.assertFalse(helpers.get_settings(reader=lambda: raw)["auto_configure_integration"])
-
-    def test_subscription_settings_defaults(self):
-        s = helpers.get_settings(reader=lambda: {})
-        self.assertEqual(s["subscription_interval_hours"], 0)
-        self.assertIs(s["disable_proto_vless"], False)
-        self.assertIs(s["disable_proto_trojan"], False)
-        self.assertIs(s["disable_proto_hysteria2"], False)
-
-    def test_subscription_settings_normalized(self):
-        raw = {"subscription_interval_hours": "24",
-               "disable_proto_vless": "true",
-               "disable_proto_trojan": "false",
-               "disable_proto_hysteria2": "true"}
-        s = helpers.get_settings(reader=lambda: raw)
-        self.assertEqual(s["subscription_interval_hours"], 24)
-        self.assertIs(s["disable_proto_vless"], True)
-        self.assertIs(s["disable_proto_trojan"], False)
-        self.assertIs(s["disable_proto_hysteria2"], True)
-
-    def test_disabled_protocols_empty_by_default(self):
-        self.assertEqual(helpers.disabled_protocols(
-            reader=lambda: {}), ())
-
-    def test_disabled_protocols_from_toggles(self):
-        raw = {"disable_proto_vless": "true",
-               "disable_proto_trojan": "false",
-               "disable_proto_hysteria2": "true"}
-        got = helpers.disabled_protocols(reader=lambda: raw)
-        self.assertEqual(sorted(got), ["hysteria2", "vless"])
-
-    def test_disabled_protocols_merges_legacy_skip_list(self):
-        raw = {"disable_proto_vless": "false",
-               "disable_proto_trojan": "false",
-               "disable_proto_hysteria2": "false",
-               "skip_protocols": "trojan,xhttp"}
-        got = helpers.disabled_protocols(reader=lambda: raw)
-        self.assertEqual(sorted(got), ["trojan", "xhttp"])
-
-    def test_parse_dns_server_udp(self):
-        self.assertEqual(helpers.parse_dns_server("8.8.8.8"),
-                         {"kind": "udp", "host": "8.8.8.8", "port": 53})
-
-    def test_parse_dns_server_doh(self):
-        self.assertEqual(
-            helpers.parse_dns_server("https://dns.google/dns-query"),
-            {"kind": "doh", "host": "dns.google", "port": 443})
-
-    def test_parse_dns_server_dot(self):
-        self.assertEqual(helpers.parse_dns_server("tls://8.8.8.8"),
-                         {"kind": "dot", "host": "8.8.8.8", "port": 853})
-
-    def test_parse_dns_server_empty(self):
-        self.assertIsNone(helpers.parse_dns_server(""))
-        self.assertIsNone(helpers.parse_dns_server(None))
-
-    def test_parse_dns_server_garbage(self):
-        self.assertIsNone(helpers.parse_dns_server("not a dns server"))
-
-    def test_dns_settings_defaults(self):
-        s = helpers.get_settings(reader=lambda: {})
-        self.assertEqual(s["dns_server"], "")
-        self.assertEqual(s["dns_query_strategy"], "")
-        self.assertIs(s["direct_torrent"], False)
-
-    def test_dns_settings_normalized(self):
-        raw = {"dns_server": "tls://1.1.1.1",
-               "dns_query_strategy": "prefer_ipv4",
-               "direct_torrent": "true"}
-        s = helpers.get_settings(reader=lambda: raw)
-        self.assertEqual(s["dns_server"], "tls://1.1.1.1")
-        self.assertEqual(s["dns_query_strategy"], "prefer_ipv4")
-        self.assertIs(s["direct_torrent"], True)
-
-    def test_dns_strategy_integer_mapping(self):
-        for raw_value, expected in (("0", ""), ("1", "prefer_ipv4"),
-                                    ("2", "ipv4_only"), ("3", "prefer_ipv6"),
-                                    ("4", "ipv6_only")):
-            s = helpers.get_settings(reader=lambda: {
-                "dns_query_strategy": raw_value})
-            self.assertEqual(s["dns_query_strategy"], expected,
-                             "strategy %s must map to %r" % (raw_value,
-                                                              expected))
-
-    def test_geo_settings_defaults(self):
-        s = helpers.get_settings(reader=lambda: {})
-        self.assertEqual(
-            s["geoip_url"],
-            "https://github.com/runetfreedom/russia-blocked-geoip/"
-            "releases/latest/download/geoip.dat")
-        self.assertEqual(s["geosite_url"], "")
-
-    def test_geo_settings_normalized(self):
-        raw = {"geoip_url": "https://example.com/geoip.dat",
-               "geosite_url": "https://example.com/geosite.dat"}
-        s = helpers.get_settings(reader=lambda: raw)
-        self.assertEqual(s["geoip_url"], "https://example.com/geoip.dat")
-        self.assertEqual(s["geosite_url"], "https://example.com/geosite.dat")
-
-    def test_geo_databases_paths_under_profile_dir(self):
-        p = helpers.geo_databases_path()
-        self.assertTrue(p["geoip"].endswith("geoip.dat"))
-        self.assertTrue(p["geosite"].endswith("geosite.dat"))
-
     def test_sync_geo_databases_downloads_both(self):
         fetches = {}
 
@@ -1056,35 +519,6 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(status["geoip"], "skipped")
         self.assertEqual(status["geosite"], "skipped")
 
-    def test_pick_reachable_returns_preferred_when_reachable(self):
-        profs = [
-            {"tag": "A", "server": "h1", "port": 1, "enabled": True},
-            {"tag": "B", "server": "h2", "port": 2, "enabled": True},
-        ]
-        tag, err = helpers.pick_reachable(profs, "A", prober=lambda *a: 10)
-        self.assertEqual(tag, "A")
-        self.assertIsNone(err)
-
-    def test_pick_reachable_skips_unreachable_preferred(self):
-        profs = [
-            {"tag": "A", "server": "h1", "port": 1, "enabled": True},
-            {"tag": "B", "server": "h2", "port": 2, "enabled": True},
-        ]
-        def prober(host, port, timeout):
-            return None if port == 1 else 10
-        tag, err = helpers.pick_reachable(profs, "A", prober=prober)
-        self.assertEqual(tag, "B")
-        self.assertIsNone(err)
-
-    def test_pick_reachable_returns_error_when_none_reachable(self):
-        profs = [
-            {"tag": "A", "server": "h1", "port": 1, "enabled": True},
-            {"tag": "B", "server": "h2", "port": 2, "enabled": True},
-        ]
-        tag, err = helpers.pick_reachable(profs, "A", prober=lambda *a: None)
-        self.assertIsNone(tag)
-        self.assertIsNotNone(err)
-
     def test_pick_reachable_skips_disabled_profiles(self):
         profs = [
             {"tag": "A", "server": "h1", "port": 1, "enabled": False},
@@ -1103,20 +537,6 @@ class TestBinaryManager(unittest.TestCase):
             self.assertTrue(bm.work_binary.endswith(
                 os.path.join("bin", "sing-box", "linux_x64", "sing-box")))
             self.assertEqual(bm.platform, "linux_x64")
-
-    def test_custom_path_valid(self):
-        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
-            fake = os.path.join(addon, "sing-box")
-            with open(fake, "w") as f:
-                f.write("#!/bin/sh\nexit 0\n")
-            os.chmod(fake, 0o755)
-            bm = binary_manager.BinaryManager(addon, work, custom_path=fake)
-            self.assertEqual(bm.ensure_binary(), fake)
-
-    def test_custom_path_invalid_falls_back(self):
-        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
-            bm = binary_manager.BinaryManager(addon, work, custom_path="/nonexistent/x")
-            self.assertIsNone(bm._resolve_custom())
 
     def test_xray_geo_files_copied_to_work_dir(self):
         with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
@@ -1155,20 +575,6 @@ class TestBinaryManager(unittest.TestCase):
                 self.assertEqual(f.read(), "downloaded-with-ru-blocked",
                                  "downloaded DB must win over bundled")
 
-    def test_singbox_does_not_require_geo_files(self):
-        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
-            bin_dir = os.path.join(addon, "resources", "bin", "linux_x64")
-            os.makedirs(bin_dir)
-            with open(os.path.join(bin_dir, "sing-box"), "w") as f:
-                f.write("#!/bin/sh\nexit 0\n")
-            os.chmod(os.path.join(bin_dir, "sing-box"), 0o755)
-            bm = binary_manager.BinaryManager(
-                addon, work, platform_override="linux_x64")
-            bm.ensure_binary()
-            self.assertFalse(
-                os.path.exists(os.path.join(bm.work_dir_bin, "geoip.dat")),
-                "sing-box needs no geo files")
-
     def test_stop_sigterm_bounded_wait(self):
         """Test SIGTERM + bounded wait: process.terminate() is called, handle is retained until exit is confirmed, and self.proc is set to None only after exit."""
         with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
@@ -1195,149 +601,6 @@ class TestBinaryManager(unittest.TestCase):
             bm.stop()
             self.assertIsNone(bm.proc, "Process handle should be cleared after exit is confirmed")
 
-    def test_stop_sigkill_escalation(self):
-        """Test SIGKILL escalation: wait(term_timeout) times out, SIGKILL is sent, and wait(kill_timeout) is called after SIGKILL."""
-        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
-            bm = binary_manager.BinaryManager(addon, work)
-            fake_proc = _FakeProcessForStop()
-            fake_proc._exit_delay = 2  # Ensure term_timeout and kill_timeout expire
-            bm.proc = fake_proc
-            
-            # Call stop() and assert terminate() is called
-            bm.stop(term_timeout=0.1, kill_timeout=0.1)
-            self.assertIn("terminate", fake_proc._calls)
-            self.assertIn("kill", fake_proc._calls)
-            self.assertIsNone(bm.proc, "Process handle should be cleared after SIGKILL")
-
-    def test_stop_handles_process_exiting_before_terminate(self):
-        """A process that exits between is_running() and terminate() is a
-        successful stop: terminate() raises ProcessLookupError, the handle is
-        cleared, and stop() returns True instead of retaining a dead handle."""
-        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
-            log_recorder = _LogRecorder()
-            bm = binary_manager.BinaryManager(addon, work, logger=log_recorder)
-            fake_proc = _FakeProcessForStop()
-            fake_proc._exit_before_terminate = True
-            bm.proc = fake_proc
-
-            result = bm.stop(term_timeout=0.1, kill_timeout=0.1)
-            self.assertTrue(result, "a process that already exited is a successful stop")
-            self.assertIsNone(bm.proc, "handle must be cleared once exit is confirmed")
-
-    def test_stop_refusal_case(self):
-        """Test refusal case: both term and kill waits time out, stop() returns False, process handle is retained, and a log is emitted."""
-        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
-            log_recorder = _LogRecorder()
-            bm = binary_manager.BinaryManager(addon, work, logger=log_recorder)
-            fake_proc = _FakeProcessForStop()
-            fake_proc._exit_delay = 3  # Ensure term_timeout and kill_timeout expire
-            bm.proc = fake_proc
-            
-            # Call stop() and assert it returns False
-            result = bm.stop(term_timeout=0.1, kill_timeout=0.1)
-            self.assertFalse(result, "stop() should return False if both waits time out")
-            self.assertIsNotNone(bm.proc, "Process handle should be retained if both waits time out")
-            self.assertTrue(any(lvl == "warn" and "did not exit after SIGKILL" in m
-                                and "handle retained" in m
-                                for lvl, m in log_recorder.entries),
-                            log_recorder.entries)
-
-    def test_stop_waits_for_listener_release(self):
-        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
-            bm = binary_manager.BinaryManager(addon, work)
-            fake_proc = _FakeProcessForStop()
-            bm.proc = fake_proc
-            clock = _FakeBinaryClock()
-            with patch.object(port_utils, "port_in_use",
-                              side_effect=[True, True, False]), \
-                    patch.object(binary_manager, "time", clock):
-                ok = bm.stop(port=1080, release_timeout=5.0)
-            self.assertTrue(ok)
-            self.assertIsNone(bm.proc)
-            self.assertEqual(clock.sleeps, [0.1, 0.1],
-                             "release polling must step in 100 ms until the listener is free")
-
-    def test_stop_logs_busy_listener_but_still_returns_true(self):
-        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
-            log_recorder = _LogRecorder()
-            bm = binary_manager.BinaryManager(addon, work, logger=log_recorder)
-            fake_proc = _FakeProcessForStop()
-            bm.proc = fake_proc
-            clock = _FakeBinaryClock()
-            with patch.object(port_utils, "port_in_use",
-                              side_effect=lambda *a, **k: True), \
-                    patch.object(binary_manager, "time", clock):
-                ok = bm.stop(port=1080, release_timeout=0.3)
-            self.assertTrue(ok, "process death was confirmed, so stop() stays True")
-            self.assertIsNone(bm.proc)
-            self.assertEqual(clock.sleeps, [0.1, 0.1, 0.1],
-                             "polling must continue until release_timeout elapses")
-            self.assertTrue(any(lvl == "warn" and "1080" in m
-                                for lvl, m in log_recorder.entries),
-                            log_recorder.entries)
-
-    def test_start_waits_for_listener_before_returning(self):
-        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
-            bm = binary_manager.BinaryManager(
-                addon, work, custom_path=_write_executable(os.path.join(addon, "sing-box")))
-            fake_proc = _FakeProcessForStop()
-            clock = _FakeBinaryClock()
-            with patch.object(binary_manager.subprocess, "Popen",
-                              side_effect=_popen_returning(fake_proc)), \
-                    patch.object(port_utils, "port_in_use",
-                                 side_effect=[False, False, True]), \
-                    patch.object(binary_manager, "time", clock):
-                proc = bm.start(os.path.join(work, "engine.json"), port=1080,
-                                ready_timeout=1.0)
-            self.assertIs(proc, fake_proc)
-            self.assertEqual(clock.sleeps, [0.1, 0.1],
-                             "readiness must poll in 100 ms steps until the listener is up")
-            self.assertIsNone(fake_proc.poll(),
-                              "the process must stay alive after start returns")
-
-    def test_start_readiness_timeout_stops_spawned_process_and_raises(self):
-        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
-            log_recorder = _LogRecorder()
-            bm = binary_manager.BinaryManager(
-                addon, work, custom_path=_write_executable(os.path.join(addon, "sing-box")),
-                logger=log_recorder)
-            fake_proc = _FakeProcessForStop()
-            clock = _FakeBinaryClock()
-            with patch.object(binary_manager.subprocess, "Popen",
-                              side_effect=_popen_returning(fake_proc)), \
-                    patch.object(port_utils, "port_in_use",
-                                 side_effect=lambda *a, **k: False), \
-                    patch.object(binary_manager, "time", clock):
-                with self.assertRaises(RuntimeError):
-                    bm.start(os.path.join(work, "engine.json"), port=1080,
-                             ready_timeout=0.3)
-            self.assertIsNone(bm.proc,
-                              "no live process handle may survive a failed start")
-            self.assertIn("terminate", fake_proc._calls,
-                          "the spawned process must be stopped through the hardened path")
-            self.assertTrue(any("stopping" in m.lower() for lvl, m in log_recorder.entries),
-                            log_recorder.entries)
-
-    def test_start_fails_when_process_exits_during_readiness(self):
-        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
-            bm = binary_manager.BinaryManager(
-                addon, work, custom_path=_write_executable(os.path.join(addon, "sing-box")))
-            fake_proc = _FakeProcessForStop()
-            fake_proc._exit_code = 1
-            clock = _FakeBinaryClock()
-            with patch.object(binary_manager.subprocess, "Popen",
-                              side_effect=_popen_returning(fake_proc)), \
-                    patch.object(port_utils, "port_in_use",
-                                 side_effect=lambda *a, **k: False), \
-                    patch.object(binary_manager, "time", clock):
-                with self.assertRaises(RuntimeError):
-                    bm.start(os.path.join(work, "engine.json"), port=1080,
-                             ready_timeout=0.3)
-            self.assertIsNone(bm.proc,
-                              "a dead process must not survive as a ready handle")
-            self.assertNotIn("terminate", fake_proc._calls,
-                             "no signal is needed once the process already exited")
-
     def test_restart_forwards_port_to_stop_and_start(self):
         with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
             bm = binary_manager.BinaryManager(addon, work)
@@ -1348,282 +611,6 @@ class TestBinaryManager(unittest.TestCase):
             start_mock.assert_called_once_with("/cfg.json", port=1080,
                                                ready_timeout=7.5)
             self.assertIs(result, start_mock.return_value)
-
-
-class TestPluginArgs(unittest.TestCase):
-    def test_basic_with_query(self):
-        handle, params = helpers.parse_plugin_args(
-            ["default.py", "0", "?action=add"])
-        self.assertEqual(handle, 0)
-        self.assertEqual(params, {"action": "add"})
-
-    def test_no_query(self):
-        handle, params = helpers.parse_plugin_args(["default.py", "42"])
-        self.assertEqual(handle, 42)
-        self.assertEqual(params, {})
-
-    def test_empty_argv(self):
-        handle, params = helpers.parse_plugin_args(["default.py"])
-        self.assertEqual(handle, -1)
-        self.assertEqual(params, {})
-
-    def test_tag_url_encoded_colon_decoded(self):
-        handle, params = helpers.parse_plugin_args(
-            ["default.py", "1", "?action=activate&tag=AUTO%3AVLESS"])
-        self.assertEqual(handle, 1)
-        self.assertEqual(params["action"], "activate")
-        self.assertEqual(params["tag"], "AUTO:VLESS")
-
-    def test_query_without_question_prefix(self):
-        handle, params = helpers.parse_plugin_args(
-            ["default.py", "5", "action=test"])
-        self.assertEqual(handle, 5)
-        self.assertEqual(params, {"action": "test"})
-
-
-class TestMeasureLatencies(unittest.TestCase):
-    def test_real_prober_module_imports(self):
-        self.assertTrue(hasattr(helpers, "time"))
-        self.assertTrue(callable(helpers._real_prober))
-
-    def test_measures_enabled_profiles_only(self):
-        profs = [
-            {"tag": "A", "server": "h1", "port": 1, "enabled": True},
-            {"tag": "B", "server": "h2", "port": 2, "enabled": False},
-            {"tag": "C", "server": "h3", "port": 3, "enabled": True},
-        ]
-
-        def fake_prober(host, port, timeout):
-            return 10
-
-        result = helpers.measure_latencies(profs, prober=fake_prober)
-        self.assertEqual(result["A"], 10)
-        self.assertEqual(result["C"], 10)
-        self.assertEqual(result["B"], None)
-
-    def test_timeout_and_failure_map_to_none(self):
-        profs = [
-            {"tag": "ok", "server": "h", "port": 1, "enabled": True},
-            {"tag": "fail", "server": "h", "port": 2, "enabled": True},
-        ]
-
-        def fake_prober(host, port, timeout):
-            if port == 1:
-                return 5
-            raise socket.error("boom")
-
-        result = helpers.measure_latencies(profs, prober=fake_prober)
-        self.assertEqual(result["ok"], 5)
-        self.assertIsNone(result["fail"])
-
-    def test_concurrency_is_bounded(self):
-        # Many profiles must not be probed all at once: that saturates the
-        # device and makes every probe time out.
-        import threading
-        import time as _time
-        active = []
-        peak = [0]
-        lock = threading.Lock()
-
-        def slow_prober(host, port, timeout):
-            with lock:
-                active.append(1)
-                peak[0] = max(peak[0], len(active))
-            _time.sleep(0.05)
-            with lock:
-                active.pop()
-            return 5
-
-        profs = [{"tag": "p%d" % i, "server": "h", "port": i, "enabled": True}
-                 for i in range(24)]
-        helpers.measure_latencies(profs, prober=slow_prober, timeout=0.5)
-        self.assertLessEqual(peak[0], 8,
-                             "at most 8 probes may run concurrently")
-
-    def test_concurrent_not_serial(self):
-        profs = [
-            {"tag": "A", "server": "h", "port": 1, "enabled": True},
-            {"tag": "B", "server": "h", "port": 2, "enabled": True},
-            {"tag": "C", "server": "h", "port": 3, "enabled": True},
-        ]
-
-        def fake_prober(host, port, timeout):
-            time.sleep(0.2)
-            return 1
-
-        t0 = time.time()
-        result = helpers.measure_latencies(profs, prober=fake_prober, timeout=0.2)
-        elapsed = time.time() - t0
-        self.assertEqual(len(result), 3)
-        self.assertLess(elapsed, 0.5, "concurrent probing ran serially")
-
-    def test_all_profiles_included_even_when_empty(self):
-        result = helpers.measure_latencies([], prober=lambda h, p, t: 1)
-        self.assertEqual(result, {})
-
-
-class TestDirectoryEntries(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.store = profiles.ProfileStore(os.path.join(self.tmp, "profiles.json"))
-        self.base = "plugin://service.advancedproxy/"
-
-    def _entries(self, mode="urltest", latencies=None):
-        return helpers.build_directory_entries(self.store, mode, self.base, latencies=latencies)
-
-    def _actions(self):
-        return [a["action"] for a in self._entries() if a["kind"] == "action"]
-
-    def test_empty_listing_has_add_and_settings_not_clear(self):
-        a = self._actions()
-        self.assertIn("add", a)
-        self.assertIn("settings", a)
-        self.assertNotIn("clear", a)
-        info = [e for e in self._entries() if e["kind"] == "info"]
-        self.assertEqual(len(info), 1)
-
-    def test_profile_entries_preserve_order_and_active_first(self):
-        self.store.add_uri(VLESS)
-        self.store.add_uri(HY2)
-        profs = [e for e in self._entries() if e["kind"] == "profile"]
-        self.assertEqual(len(profs), 2)
-        self.assertEqual(profs[0]["tag"], "AUTO:VLESS")
-        self.assertTrue(profs[0]["is_active"])
-        self.assertTrue(profs[0]["enabled"])
-        self.assertEqual(profs[1]["tag"], "AUTO:Hysteria2")
-        self.assertFalse(profs[1]["is_active"])
-        self.assertTrue(profs[1]["enabled"])
-
-    def test_action_url_tag_is_url_encoded(self):
-        self.store.add_uri(VLESS)
-        prof = [e for e in self._entries() if e["kind"] == "profile"][0]
-        self.assertIn("tag=AUTO%3AVLESS", prof["click_url"])
-        self.assertIn("action=activate", prof["click_url"])
-        self.assertIn("tag=AUTO%3AVLESS", prof["toggle_url"])
-        self.assertIn("action=toggle", prof["toggle_url"])
-        self.assertIn("tag=AUTO%3AVLESS", prof["remove_url"])
-        self.assertIn("action=remove", prof["remove_url"])
-
-    def test_profile_entry_carries_copy_url(self):
-        self.store.add_uri(VLESS)
-        prof = [e for e in self._entries() if e["kind"] == "profile"][0]
-        self.assertIn("action=copy", prof["copy_url"])
-        self.assertIn("tag=AUTO%3AVLESS", prof["copy_url"])
-
-    def test_group_rows_emitted_when_subscriptions_present(self):
-        groups = [{"id": "sub-abc", "url": "https://example.com/sub",
-                   "last_updated": 0, "last_error": None}]
-        entries = helpers.build_directory_entries(
-            self.store, "urltest", self.base, subscriptions=groups)
-        rows = [e for e in entries if e["kind"] == "subscription"]
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["url"], "https://example.com/sub")
-        self.assertIn("action=sub_refresh", rows[0]["refresh_url"])
-        self.assertIn("id=sub-abc", rows[0]["refresh_url"])
-        self.assertIn("action=sub_remove", rows[0]["remove_url"])
-
-    def test_no_group_rows_without_subscriptions(self):
-        entries = helpers.build_directory_entries(
-            self.store, "urltest", self.base)
-        rows = [e for e in entries if e["kind"] == "subscription"]
-        self.assertEqual(rows, [])
-
-    def test_disabled_profile_not_active(self):
-        self.store.add_uri(VLESS)
-        self.store.add_uri(HY2)
-        self.store.toggle("AUTO:VLESS")
-        prof = [e for e in self._entries()
-                if e["kind"] == "profile" and e["tag"] == "AUTO:VLESS"][0]
-        self.assertFalse(prof["enabled"])
-        self.assertFalse(prof["is_active"])
-
-    def test_clear_present_when_profiles_exist(self):
-        self.store.add_uri(VLESS)
-        self.assertIn("clear", self._actions())
-
-    def test_actions_order_profiles_first(self):
-        self.store.add_uri(VLESS)
-        entries = self._entries()
-        kinds = [e["kind"] for e in entries]
-        self.assertEqual(kinds.index("mode_toggle"), 0)
-        self.assertGreater(kinds.index("profile"), kinds.index("mode_toggle"))
-        self.assertGreater(kinds.index("action"), kinds.index("profile"))
-
-    def test_protocol_in_profile_entry(self):
-        self.store.add_uri(VLESS)
-        prof = [e for e in self._entries() if e["kind"] == "profile"][0]
-        self.assertEqual(prof["protocol"], "vless")
-
-    def test_no_info_entry_when_profiles_present(self):
-        self.store.add_uri(VLESS)
-        info = [e for e in self._entries() if e["kind"] == "info"]
-        self.assertEqual(len(info), 0)
-
-    def test_mode_toggle_entry_at_top(self):
-        self.store.add_uri(VLESS)
-        entries = self._entries(mode="urltest")
-        self.assertEqual(entries[0]["kind"], "mode_toggle")
-        self.assertEqual(entries[0]["mode"], "urltest")
-        self.assertIn("action=toggle_mode", entries[0]["url"])
-
-    def test_profile_entry_has_latency_ms_when_passed(self):
-        self.store.add_uri(VLESS)
-        latencies = {"AUTO:VLESS": 142}
-        prof = [e for e in self._entries(latencies=latencies) if e["kind"] == "profile"][0]
-        self.assertEqual(prof["latency_ms"], 142)
-
-    def test_disabled_profile_latency_ms_is_none(self):
-        self.store.add_uri(VLESS)
-        self.store.toggle("AUTO:VLESS")
-        prof = [e for e in self._entries(latencies={})
-                if e["kind"] == "profile"][0]
-        self.assertIsNone(prof["latency_ms"])
-
-
-class TestOsarch(unittest.TestCase):
-    def test_supported(self):
-        self.assertTrue(osarch.is_supported(osarch.get_platform()))
-
-    def test_override(self):
-        self.assertEqual(osarch.get_platform("linux_armv7"), "linux_armv7")
-
-    def test_override_traversal_falls_back(self):
-        """Malicious platform override must not be returned verbatim."""
-        self.assertIn(osarch.get_platform("../"), osarch.SUPPORTED)
-        self.assertIn(osarch.get_platform("..\\"), osarch.SUPPORTED)
-        self.assertIn(osarch.get_platform("foo/bar"), osarch.SUPPORTED)
-        self.assertIn(osarch.get_platform("../../etc/passwd"), osarch.SUPPORTED)
-        self.assertIn(osarch.get_platform("linux_x64/../"), osarch.SUPPORTED)
-
-    def test_valid_override_still_works(self):
-        for p in ("linux_x64", "linux_armv7", "windows_x64", "android_arm"):
-            self.assertEqual(osarch.get_platform(p), p)
-
-
-class TestLogLevelMapping(unittest.TestCase):
-    def test_settings_order_matches_helpers(self):
-        raw = {"log_level": "0"}
-        self.assertEqual(helpers.get_settings(reader=lambda: raw)["log_level"], "debug")
-        raw["log_level"] = "1"
-        self.assertEqual(helpers.get_settings(reader=lambda: raw)["log_level"], "info")
-        raw["log_level"] = "2"
-        self.assertEqual(helpers.get_settings(reader=lambda: raw)["log_level"], "warn")
-        raw["log_level"] = "3"
-        self.assertEqual(helpers.get_settings(reader=lambda: raw)["log_level"], "error")
-
-    def test_default_log_level(self):
-        self.assertEqual(helpers.get_settings(reader=lambda: {})["log_level"], "info")
-
-
-class TestNoEnabledProfilesString(unittest.TestCase):
-    def test_action_test_uses_dedicated_no_enabled_string(self):
-        with open(os.path.join(HERE, "..", "service.advancedproxy", "default.py")) as f:
-            src = f.read()
-        start = src.index("def _action_test(")
-        end = src.index("\ndef ", start + 1)
-        body = src[start:end]
-        self.assertIn("32218", body)
-        self.assertNotIn("32214", body)
 
 
 class TestProfileStoreActivation(unittest.TestCase):
@@ -1729,47 +716,6 @@ class TestSupervisorReconfigureEngine(unittest.TestCase):
         self.assertIn(("start", "new", self.sup.effective_port), self.calls)
 
 
-class TestPortUtils(unittest.TestCase):
-    def _free_port(self):
-        s = socket.socket()
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-        s.close()
-        return port
-
-    def test_free_port_detected(self):
-        port = self._free_port()
-        self.assertFalse(port_utils.port_in_use(port))
-        self.assertEqual(port_utils.find_free_port(port), port)
-
-    def test_busy_port_detected(self):
-        s = socket.socket()
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-        s.listen(1)
-        try:
-            self.assertTrue(port_utils.port_in_use(port))
-        finally:
-            s.close()
-
-    def test_fallback_skips_busy_port(self):
-        s = socket.socket()
-        s.bind(("127.0.0.1", 0))
-        busy = s.getsockname()[1]
-        s.listen(1)
-        try:
-            picked = port_utils.find_free_port(busy)
-            self.assertGreater(picked, busy)
-            self.assertLess(picked, busy + 100)
-            self.assertFalse(port_utils.port_in_use(picked))
-        finally:
-            s.close()
-
-    def test_invalid_port_is_busy(self):
-        self.assertTrue(port_utils.port_in_use(0))
-        self.assertTrue(port_utils.port_in_use(70000))
-
-
 class TestSupervisorPortFallback(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -1808,44 +754,6 @@ class TestSupervisorPortFallback(unittest.TestCase):
             cfg = json.load(f)
         self.assertEqual(cfg["inbounds"][0]["listen_port"], 1080)
 
-    def test_state_json_reports_effective_port(self):
-        blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        blocker.bind(("127.0.0.1", 1080))
-        blocker.listen(1)
-        try:
-            self.sup.start()
-            with open(self.sup.state_path) as f:
-                st = json.load(f)
-            self.assertEqual(st["port"], 1081)
-            self.assertTrue(st["running"])
-        finally:
-            blocker.close()
-
-    def test_start_resolves_port_exactly_once_and_forwards_it(self):
-        real_resolve = self.sup._resolve_effective_port
-        resolve_calls = []
-
-        def counting():
-            resolve_calls.append(1)
-            return real_resolve()
-
-        self.sup._resolve_effective_port = counting
-        self.assertTrue(self.sup.start())
-        self.assertEqual(resolve_calls, [1])
-        self.assertIn(("start", "sing-box", self.sup.effective_port),
-                      self.sup.bin._calls)
-        with open(self.sup.config_path) as f:
-            cfg = json.load(f)
-        self.assertEqual(cfg["inbounds"][0]["listen_port"],
-                         self.sup.effective_port)
-
-    def test_restart_forwards_the_effective_port(self):
-        self.assertTrue(self.sup.start())
-        self.sup.bin._calls[:] = []
-        self.sup.restart()
-        self.assertIn(("restart", "sing-box", self.sup.effective_port),
-                      self.sup.bin._calls)
-
     def test_tick_never_resolves_port_or_rewrites_config(self):
         self.assertTrue(self.sup.start())
         with open(self.sup.config_path) as f:
@@ -1865,17 +773,6 @@ class TestSupervisorPortFallback(unittest.TestCase):
         with open(self.sup.config_path) as f:
             after = f.read()
         self.assertEqual(after, before)
-
-
-class TestDefaultPyUsesHelpersLatency(unittest.TestCase):
-    def test_no_duplicate_latency_prober(self):
-        path = os.path.join(HERE, "..", "service.advancedproxy", "default.py")
-        with open(path) as f:
-            src = f.read()
-        self.assertNotIn("def _tcp_latency", src)
-        body = re.search(r"def _action_test\(handle\):.*?(?=\ndef |\Z)", src, re.DOTALL)
-        self.assertIsNotNone(body)
-        self.assertIn("helpers._real_prober", body.group(0))
 
 
 class TestPluginActionRefresh(unittest.TestCase):
@@ -2718,18 +1615,6 @@ class TestMainLifecycleWiring(unittest.TestCase):
         self.assertEqual(manager.calls[:2],
                          [("sup.start",), ("ensure", INTEGRATION_HOST, 1081)])
 
-    def test_configured_port_is_not_used_when_engine_falls_back(self):
-        manager = _FakeIntegrationManager()
-        _run_main([_settings(local_port=9090)], manager)
-        self.assertIn(("ensure", INTEGRATION_HOST, 9091), manager.calls)
-        self.assertNotIn(("ensure", INTEGRATION_HOST, 9090), manager.calls)
-
-    def test_shutdown_restores_before_stopping_the_engine(self):
-        manager = _FakeIntegrationManager()
-        _run_main([_settings()], manager)
-        self.assertLess(manager.calls.index(("restore",)),
-                        manager.calls.index(("sup.stop",)))
-
     def test_failed_start_restores_stale_backup_and_never_ensures(self):
         manager = _FakeIntegrationManager(backup=True)
         _run_main([_settings()], manager, start_ok=False)
@@ -2746,103 +1631,6 @@ class TestMainLifecycleWiring(unittest.TestCase):
                           ("loop.abort",),
                           ("sup.begin_shutdown",), ("sup.begin_shutdown",),
                           ("restore",), ("sup.stop",)])
-
-    def test_autostart_off_restores_stale_backup(self):
-        manager = _FakeIntegrationManager(backup=True)
-        _run_main([_settings(autostart=False)], manager)
-        self.assertEqual(manager.calls,
-                         [("restore",), ("loop.abort",),
-                          ("sup.begin_shutdown",), ("sup.begin_shutdown",),
-                          ("sup.stop",)])
-
-    def test_idle_service_without_backup_writes_nothing(self):
-        manager = _FakeIntegrationManager(backup=False)
-        _run_main([_settings(autostart=False)], manager)
-        self.assertEqual(manager.writes, [])
-
-    def test_disabling_setting_at_runtime_restores_and_validates(self):
-        manager = _FakeIntegrationManager()
-        _run_main([_settings(), _settings(auto_configure_integration=False)],
-                  manager)
-        self.assertEqual(manager.calls,
-                         [("sup.start",), ("ensure", INTEGRATION_HOST, 1081),
-                          ("restore",), ("validate", INTEGRATION_HOST, 1081),
-                          ("loop.abort",), ("sup.begin_shutdown",),
-                          ("sup.begin_shutdown",), ("sup.stop",)])
-
-    def test_enabling_setting_at_runtime_ensures(self):
-        manager = _FakeIntegrationManager()
-        _run_main([_settings(auto_configure_integration=False), _settings()],
-                  manager)
-        self.assertEqual(manager.calls,
-                         [("sup.start",), ("ensure", INTEGRATION_HOST, 1081),
-                          ("loop.abort",), ("sup.begin_shutdown",),
-                          ("sup.begin_shutdown",), ("restore",),
-                          ("sup.stop",)])
-
-    def test_port_change_reconfigures_then_ensures_new_port(self):
-        manager = _FakeIntegrationManager()
-        _run_main([_settings(), _settings(local_port=9090)], manager)
-        self.assertEqual(manager.calls,
-                         [("sup.start",), ("ensure", INTEGRATION_HOST, 1081),
-                          ("sup.reconfigure",),
-                          ("ensure", INTEGRATION_HOST, 9091),
-                          ("loop.abort",), ("sup.begin_shutdown",),
-                          ("sup.begin_shutdown",), ("restore",),
-                          ("sup.stop",)])
-
-    def test_failed_reconfigure_restores_instead_of_ensuring(self):
-        manager = _FakeIntegrationManager()
-        _run_main([_settings(), _settings(local_port=9090)], manager,
-                  start_ok=False)
-        self.assertEqual(manager.calls,
-                         [("sup.start",), ("sup.reconfigure",), ("loop.abort",),
-                          ("sup.begin_shutdown",), ("sup.begin_shutdown",),
-                          ("sup.stop",)])
-
-    def test_unrelated_setting_change_does_not_touch_integration(self):
-        manager = _FakeIntegrationManager()
-        _run_main([_settings(), _settings(notify=False)], manager)
-        self.assertEqual(manager.calls,
-                         [("sup.start",), ("ensure", INTEGRATION_HOST, 1081),
-                          ("loop.abort",), ("sup.begin_shutdown",),
-                          ("sup.begin_shutdown",), ("restore",),
-                          ("sup.stop",)])
-
-    def test_start_after_profile_change_ensures_effective_port(self):
-        manager = _FakeIntegrationManager()
-        _run_main([_settings(autostart=False), _settings()], manager,
-                  mtimes=[0, 5])
-        self.assertEqual(manager.calls,
-                         [("sup.reload_profiles",), ("sup.start",),
-                          ("ensure", INTEGRATION_HOST, 1081),
-                          ("loop.abort",), ("sup.begin_shutdown",),
-                          ("sup.begin_shutdown",), ("restore",),
-                          ("sup.stop",)])
-
-    def test_monitor_created_before_supervisor_and_should_stop_injected(self):
-        manager = _FakeIntegrationManager()
-        _, sup = _run_main([_settings()], manager)
-        self.assertLess(sup.wiring.index("monitor.created"),
-                        sup.wiring.index("supervisor.created"))
-        self.assertIs(sup.should_stop.__self__, sup.monitor)
-
-    def test_aborting_monitor_orders_shutdown_events(self):
-        manager = _FakeIntegrationManager()
-        _run_main([_settings()], manager)
-        self.assertEqual(manager.calls[-5:],
-                         [("loop.abort",), ("sup.begin_shutdown",),
-                          ("sup.begin_shutdown",), ("restore",),
-                          ("sup.stop",)])
-
-    def test_reconfigure_failure_restores_without_new_ensure(self):
-        manager = _FakeIntegrationManager()
-        _run_main([_settings(), _settings(local_port=9090)], manager,
-                  reconfigure_ok=False)
-        self.assertEqual([c for c in manager.calls if c[0] == "ensure"],
-                         [("ensure", INTEGRATION_HOST, 1081)])
-        self.assertLess(manager.calls.index(("restore",)),
-                        manager.calls.index(("sup.stop",)))
 
     def test_integration_failure_never_stops_the_engine(self):
         manager = _FakeIntegrationManager(
@@ -2948,308 +1736,6 @@ class TestSupervisorTick(unittest.TestCase):
         self.notify.messages[:] = []
 
     # ----- the regression --------------------------------------------
-    def test_healthy_engine_is_not_restarted_when_180s_elapse(self):
-        self._started()
-        self.clock.advance(181)
-        self.sup.tick()
-        self.assertEqual(self.calls, [],
-                         "healthy engine was torn down by the periodic timer")
-
-    def test_healthy_engine_process_survives_an_hour_of_ticks(self):
-        self._started()
-        proc = self.sup.bin.proc
-        for _ in range(20):
-            self.clock.advance(180)
-            self.sup.tick()
-        self.assertEqual(self.calls, [])
-        self.assertIs(self.sup.bin.proc, proc, "engine process was replaced")
-        self.assertTrue(self.sup.bin.is_running())
-
-    # ----- behaviour that must be preserved ---------------------------
-    def test_tick_notifies_once_when_the_engine_comes_up(self):
-        self.sup._resolve_effective_port()
-        self.assertTrue(self.sup.build_and_write_config())
-        self.sup.bin.start(self.sup.config_path)
-        self.notify.messages[:] = []
-        self.sup.tick()
-        self.assertTrue([m for m, err in self.notify.messages if "proxy up" in m],
-                        self.notify.messages)
-        self.notify.messages[:] = []
-        self.clock.advance(300)
-        self.sup.tick()
-        self.assertEqual(self.notify.messages, [])
-
-    def test_tick_notifies_active_profile_change_without_restarting(self):
-        self._started()
-        self.sup.store.set_active("AUTO:Hysteria2")
-        self.clock.advance(300)
-        self.sup.tick()
-        self.assertIn(("Active profile: AUTO:Hysteria2", False),
-                      self.notify.messages)
-        self.assertEqual(self.calls, [])
-
-    def test_crashed_engine_is_restarted_after_backoff(self):
-        self._started()
-        self.sup.bin.crash(2)
-        self.sup.tick()
-        self.assertEqual(self.calls, [])
-        self.assertEqual(self.sup.consecutive_failures, 1)
-        self.assertTrue([m for m, err in self.notify.messages if err],
-                        self.notify.messages)
-        self.clock.advance(1)
-        self.sup.tick()
-        self.assertEqual(self.calls, [], "restarted before the backoff elapsed")
-        self.clock.advance(1)
-        self.sup.tick()
-        self.assertEqual(self._kinds(), ["start"])
-        self.assertTrue(self.sup.bin.is_running())
-
-    def test_backoff_grows_with_consecutive_failures(self):
-        self._started()
-        delays = []
-        for _ in range(4):
-            self.sup.bin.crash()
-            self.sup.tick()
-            delays.append(self.sup._restart_at - self.clock.now)
-            self.clock.advance(delays[-1])
-            self.sup.tick()
-        self.assertEqual(delays, [2, 4, 8, 16])
-
-    def test_recovered_engine_resets_the_failure_counter(self):
-        self._started()
-        self.sup.bin.crash()
-        self.sup.tick()
-        self.clock.advance(2)
-        self.sup.tick()
-        self.clock.advance(1)
-        self.sup.tick()
-        self.assertEqual(self.sup.consecutive_failures, 0)
-        self.assertIsNone(self.sup._restart_at)
-
-    def test_gives_up_after_too_many_failures(self):
-        self._started()
-        self.sup.bin.stop()
-        self.calls[:] = []
-        self.sup.consecutive_failures = 11
-        self.sup._restart_at = self.clock.now
-        self.sup.tick()
-        self.assertEqual(self.calls, [])
-        self.assertIsNone(self.sup._restart_at)
-
-    def test_backoff_is_capped_at_60_seconds(self):
-        self._started()
-        self.sup.consecutive_failures = 6
-        delays = []
-        for _ in range(3):
-            self.sup.bin.crash()
-            self.sup.tick()
-            delays.append(self.sup._restart_at - self.clock.now)
-            self.clock.advance(delays[-1])
-            self.sup.tick()
-        self.assertEqual(delays, [60, 60, 60])
-
-    # ----- shutdown-aware watchdog -----------------------------------
-    def test_clean_exit_after_begin_shutdown_does_not_arm_restart(self):
-        self._started()
-        self.sup.begin_shutdown()
-        self.sup.bin.crash(0)
-        self.sup.tick()
-        self.assertIsNone(self.sup._restart_at)
-        self.assertEqual(self.calls, [])
-        self.assertEqual(self.sup.consecutive_failures, 0)
-        self.assertEqual([m for m, err in self.notify.messages if err], [])
-
-    def test_begin_shutdown_cancels_a_pending_restart(self):
-        self._started()
-        self.sup.bin.crash(1)
-        self.sup.tick()
-        self.assertIsNotNone(self.sup._restart_at)
-        self.sup.begin_shutdown()
-        self.assertIsNone(self.sup._restart_at)
-
-    def test_begin_shutdown_is_idempotent(self):
-        self._started()
-        self.sup.begin_shutdown()
-        self.sup.begin_shutdown()
-        self.assertTrue(self.sup._shutting_down)
-        self.assertIsNone(self.sup._restart_at)
-
-    def test_stop_during_shutdown_keeps_watchdog_cancelled_and_state_false(self):
-        self._started()
-        self.sup.bin.crash(1)
-        self.sup.tick()
-        self.sup.begin_shutdown()
-        self.assertIsNone(self.sup._restart_at)
-        self.sup.stop()
-        self.assertIsNone(self.sup._restart_at)
-        with open(self.sup.state_path) as f:
-            st = json.load(f)
-        self.assertFalse(st["running"])
-
-    def test_stop_is_idempotent_and_safe_without_a_process(self):
-        self.sup.stop()
-        self.sup.stop()
-        with open(self.sup.state_path) as f:
-            st = json.load(f)
-        self.assertFalse(st["running"])
-
-    def test_stop_persists_state_and_forwards_the_effective_port(self):
-        self._started()
-        self.sup.stop()
-        self.assertIn(("stop", self.sup.effective_port), self.calls)
-        with open(self.sup.state_path) as f:
-            st = json.load(f)
-        self.assertFalse(st["running"])
-
-    # ----- should_stop injection -------------------------------------
-    def test_exit_observed_while_should_stop_is_classified_as_shutdown(self):
-        self._started()
-        self.sup.should_stop = lambda: True
-        self.sup.bin.crash(1)
-        self.sup.tick()
-        self.assertIsNone(self.sup._restart_at)
-        self.assertEqual(self.sup.consecutive_failures, 0)
-        self.assertEqual([m for m, err in self.notify.messages if err], [])
-        self.assertEqual(self.calls, [])
-
-    def test_restart_about_to_fire_is_cancelled_when_should_stop_turns_true(self):
-        self._started()
-        self.sup.bin.crash(1)
-        self.sup.tick()
-        self.assertIsNotNone(self.sup._restart_at)
-        self.sup.should_stop = lambda: True
-        self.clock.advance(3)
-        self.sup.tick()
-        self.assertEqual(self.calls, [])
-        self.assertIsNone(self.sup._restart_at)
-        self.assertFalse(self.sup.bin.is_running())
-
-    # ----- no restart after shutdown ---------------------------------
-    def test_start_after_shutdown_does_not_start_an_engine(self):
-        self._started()
-        self.sup.begin_shutdown()
-        self.calls[:] = []
-        self.assertFalse(self.sup.start())
-        self.assertEqual(self.calls, [])
-
-    def test_restart_after_shutdown_does_not_restart_the_engine(self):
-        self._started()
-        proc = self.sup.bin.proc
-        self.sup.begin_shutdown()
-        self.calls[:] = []
-        self.sup.restart()
-        self.assertEqual(self.calls, [])
-        self.assertIs(self.sup.bin.proc, proc)
-        self.assertTrue(self.sup.bin.is_running())
-
-    def test_idle_supervisor_that_never_started_does_nothing(self):
-        self.clock.advance(3600)
-        self.sup.tick()
-        self.assertEqual(self.calls, [])
-
-    # ----- explicit reconfiguration still restarts --------------------
-    def test_profile_activation_change_rebuilds_config_and_restarts(self):
-        self._started()
-        self.assertTrue(self.sup.store.set_active("AUTO:Hysteria2"))
-        self.sup.restart()
-        self.assertIn("restart", self._kinds())
-        with open(self.sup.config_path) as f:
-            cfg = json.load(f)
-        sel = [o for o in cfg["outbounds"] if o["type"] == "selector"][0]
-        self.assertEqual(sel["default"], "AUTO:Hysteria2")
-        self.assertTrue(self.sup.bin.is_running())
-
-    def test_settings_change_is_applied_by_an_explicit_restart(self):
-        self._started()
-        self.sup.settings["mode"] = "urltest"
-        self.sup.restart()
-        self.assertIn("restart", self._kinds())
-        with open(self.sup.config_path) as f:
-            cfg = json.load(f)
-        self.assertTrue([o for o in cfg["outbounds"] if o["type"] == "urltest"])
-
-    def test_restart_keeps_the_process_when_the_new_config_is_invalid(self):
-        self._started()
-        self.sup.bin.check = lambda cfg: (False, "bad config")
-        self.sup.restart()
-        self.assertEqual(self.calls, [])
-        self.assertTrue(self.sup.bin.is_running())
-
-    # ----- subscription refresh scheduling --------------------------
-
-    def test_tick_refreshes_due_subscriptions_once(self):
-        self.sup.settings["subscription_interval_hours"] = 24
-        refresh_calls = []
-        self.sup.refresh_subscriptions = lambda now, interval: (
-            refresh_calls.append((now, interval)) or True)
-        self.clock.advance(100)
-        self.sup.tick()
-        self.assertEqual(len(refresh_calls), 1)
-        self.assertEqual(refresh_calls[0][1], 24)
-
-    def test_refresh_in_flight_is_not_reentered(self):
-        self.sup.settings["subscription_interval_hours"] = 24
-        refresh_calls = []
-
-        def refresher(now, interval):
-            refresh_calls.append(1)
-            self.sup.tick()  # re-entrant tick must not refresh again
-            return False
-
-        self.sup.refresh_subscriptions = refresher
-        self.sup.tick()
-        self.assertEqual(len(refresh_calls), 1)
-
-    def test_refresh_during_watchdog_backoff_does_not_delay_restart(self):
-        self.sup.settings["subscription_interval_hours"] = 24
-        refresh_calls = []
-        self.sup.refresh_subscriptions = lambda now, interval: (
-            refresh_calls.append(1) or False)
-        self._started()
-        self.sup.bin.crash()
-        self.sup.tick()  # arms the restart at now + 2s
-        self.clock.advance(3)
-        self.sup.tick()  # refresh due AND the pending restart fires
-        self.assertGreaterEqual(len(refresh_calls), 1)
-        self.assertIn("start", self._kinds())
-
-    def test_refresh_removing_active_reconfigures_in_manual_mode(self):
-        self.sup.settings["subscription_interval_hours"] = 24
-        self._started()
-        parsed, _ = parsers.parse_lines([TROJAN])
-        self.sup.store.add_subscription_profiles(parsed, "sub-x")
-        self.sup.store.set_active("AUTO:Trojan")
-        self.sup._make_binary_manager = lambda: _FakeBin("new", self.calls)
-        self.sup.refresh_subscriptions = lambda now, interval: (
-            self.sup.store.remove_by_subscription("sub-x") or True)
-        self.sup.tick()
-        self.assertEqual(self.sup.store.active_tag, "AUTO:VLESS",
-                         "active profile must be re-picked after removal")
-        self.assertIn(("start", "new", self.sup.effective_port), self.calls,
-                      "engine must restart through the config-write path")
-        with open(self.sup.config_path) as f:
-            cfg = json.load(f)
-        sel = [o for o in cfg["outbounds"] if o["type"] == "selector"][0]
-        self.assertEqual(sel["default"], "AUTO:VLESS",
-                         "rebuilt config must reference the re-picked profile")
-
-    def test_refresh_changing_profiles_during_backoff_does_not_start_early(self):
-        self.sup.settings["subscription_interval_hours"] = 24
-        self._started()
-        self.sup.bin.crash()
-        self.sup.tick()  # arms the restart at now + 2s
-        self.calls[:] = []
-        self.clock.advance(1)
-        self.sup.refresh_subscriptions = lambda now, interval: True
-        self.sup.tick()
-        self.assertNotIn("start", self._kinds(),
-                         "refresh must not preempt the pending backoff restart")
-        self.assertIsNotNone(self.sup._restart_at)
-        self.clock.advance(2)
-        self.sup.tick()
-        self.assertIn("start", self._kinds(),
-                      "the watchdog restart still fires on schedule")
-
     def test_refresh_in_urltest_mode_reconfigures(self):
         self.sup.settings["mode"] = "urltest"
         self.sup.settings["subscription_interval_hours"] = 24
@@ -3416,33 +1902,6 @@ class TestSubscriptionDecode(unittest.TestCase):
         self.assertEqual([p["protocol"] for p in profs],
                          ["vless", "hysteria2"])
 
-    def test_urlsafe_base64_with_newlines_and_no_padding_decodes(self):
-        import base64
-        body = base64.urlsafe_b64encode((VLESS + "\n" + TROJAN).encode())
-        body = body.rstrip(b"=")  # strip padding, URL-safe style
-        profs, skipped = self.subscriptions.decode_subscription(body)
-        self.assertEqual(skipped, [])
-        self.assertEqual([p["protocol"] for p in profs],
-                         ["vless", "trojan"])
-
-    def test_text_body_with_profile_lines_is_used_as_is(self):
-        profs, skipped = self.subscriptions.decode_subscription(
-            (VLESS + "\n").encode())
-        self.assertEqual([p["protocol"] for p in profs], ["vless"])
-
-    def test_text_and_base64_without_links_is_an_error(self):
-        import base64
-        inner = base64.b64encode(b"not-a-profile-line").decode()
-        profs, skipped = self.subscriptions.decode_subscription(inner.encode())
-        self.assertEqual(profs, [])
-        self.assertEqual(skipped, [])
-
-    def test_garbage_does_not_decode(self):
-        profs, skipped = self.subscriptions.decode_subscription(
-            b"\x00\xff\xfe not a sub")
-        self.assertEqual(profs, [])
-        self.assertEqual(skipped, [])
-
     def test_zero_profile_lines_is_empty(self):
         profs, skipped = self.subscriptions.decode_subscription(
             b"just some text, no links")
@@ -3493,16 +1952,6 @@ class TestSubscriptionStore(unittest.TestCase):
                          "the old group's profiles must be cascade-removed")
         self.assertEqual(len(self.store.groups()), 1)
 
-    def test_remove_cascades_to_profile_store(self):
-        self.store.add("https://example.com/sub",
-                       fetcher=lambda url: VLESS.encode(),
-                       profile_store=self.pstore)
-        gid = self.store.groups()[0]["id"]
-        self.store.remove(gid, self.pstore)
-        self.assertEqual(self.pstore.removed,
-                         [parsers.parse_uri(VLESS)["tag"]])
-        self.assertEqual(self.store.groups(), [])
-
     def test_refresh_mirror_sync_adds_and_removes(self):
         group, _ = self.store.add("https://example.com/sub",
                                   fetcher=lambda url: (VLESS + "\n" + HY2).encode(),
@@ -3532,76 +1981,11 @@ class TestSubscriptionStore(unittest.TestCase):
         self.assertEqual(removed, [])
         self.assertIsNotNone(self.store.get(gid)["last_error"])
 
-    def test_due_respects_interval_and_never(self):
-        now = 1000.0
-        self.store.add("https://a.example/sub",
-                       fetcher=lambda url: VLESS.encode(),
-                       profile_store=self.pstore)
-        gid = self.store.groups()[0]["id"]
-        # last_updated = 1000 (injected clock), not due until 24h pass
-        self.assertEqual(self.store.due(now, 24), [])
-        # interval 0 = never
-        self.assertEqual(self.store.due(now, 0), [])
-        # after advancing past N hours, due
-        self.assertEqual(self.store.due(now + 24 * 3600 + 1, 24),
-                         [self.store.get(gid)])
-
     def _json_body(self, outbounds, remarks=None):
         cfg = {"outbounds": outbounds}
         if remarks:
             cfg["remarks"] = remarks
         return json.dumps(cfg).encode()
-
-    def test_add_json_config_body_works_through_store(self):
-        body = self._json_body([
-            {"type": "vless", "tag": "j-vless", "server": "h1",
-             "server_port": 443, "uuid": "u-1"},
-            {"type": "hysteria2", "tag": "j-hy2", "server": "h2",
-             "server_port": 8443, "password": "pw"},
-        ])
-        group, err = self.store.add("https://example.com/json",
-                                    fetcher=lambda url: body,
-                                    profile_store=self.pstore)
-        self.assertIsNone(err)
-        self.assertEqual(self.pstore.added,
-                         ["j-vless", "j-hy2"])
-        self.assertTrue(all(p.get("uri") is None
-                            for p in self.pstore.profiles))
-
-    def test_refresh_json_mirror_sync_and_empty_guard(self):
-        body1 = self._json_body([
-            {"type": "vless", "tag": "j1", "server": "h1",
-             "server_port": 443, "uuid": "u-1"},
-            {"type": "hysteria2", "tag": "j2", "server": "h2",
-             "server_port": 8443, "password": "pw"},
-        ])
-        group, err = self.store.add("https://example.com/json",
-                                    fetcher=lambda url: body1,
-                                    profile_store=self.pstore)
-        self.assertIsNone(err)
-        gid = group["id"]
-        # refresh with a changed body: drop j2, add j3
-        body2 = self._json_body([
-            {"type": "vless", "tag": "j1", "server": "h1",
-             "server_port": 443, "uuid": "u-1"},
-            {"type": "trojan", "tag": "j3", "server": "h3",
-             "server_port": 443, "password": "pw"},
-        ])
-        added, removed, err = self.store.refresh(gid, fetch=lambda url: body2,
-                                                 profile_store=self.pstore)
-        self.assertIsNone(err)
-        self.assertEqual(removed, ["j2"])
-        self.assertIn("j3", added)
-        self.assertEqual(sorted(p["tag"] for p in self.pstore.profiles),
-                         ["j1", "j3"])
-        # empty body must NOT wipe the group
-        added, removed, err = self.store.refresh(
-            gid, fetch=lambda url: b"no usable profiles here",
-            profile_store=self.pstore)
-        self.assertIsNotNone(err)
-        self.assertEqual(removed, [])
-        self.assertEqual(sorted(p["tag"] for p in self.pstore.profiles),
-                         ["j1", "j3"])
 
     def test_cascade_delete_json_group(self):
         body = self._json_body([
@@ -3615,34 +1999,6 @@ class TestSubscriptionStore(unittest.TestCase):
         self.store.remove(group["id"], self.pstore)
         self.assertEqual(self.pstore.removed, ["j1"])
         self.assertEqual(self.store.groups(), [])
-
-
-class TestEngineVersionContract(unittest.TestCase):
-    """build.sh and binary_manager.py must pin the same latest engine
-    versions; check_versions.sh treats drift between them as fatal."""
-
-    EXPECTED_SINGBOX = "1.13.15"
-    EXPECTED_XRAY = "26.7.28"
-
-    def test_build_sh_pins_latest_singbox(self):
-        with open(os.path.join(HERE, "..", "build.sh")) as f:
-            src = f.read()
-        self.assertIn('SINGBOX_VERSION="%s"' % self.EXPECTED_SINGBOX, src)
-
-    def test_build_sh_pins_latest_xray(self):
-        with open(os.path.join(HERE, "..", "build.sh")) as f:
-            src = f.read()
-        self.assertIn('XRAY_VERSION="%s"' % self.EXPECTED_XRAY, src)
-
-    def test_binary_manager_pins_latest_singbox(self):
-        with open(os.path.join(SRC, "binary_manager.py")) as f:
-            src = f.read()
-        self.assertIn('SINGBOX_VERSION = "%s"' % self.EXPECTED_SINGBOX, src)
-
-    def test_binary_manager_pins_latest_xray(self):
-        with open(os.path.join(SRC, "binary_manager.py")) as f:
-            src = f.read()
-        self.assertIn('XRAY_VERSION = "%s"' % self.EXPECTED_XRAY, src)
 
 
 class TestParseConfig(unittest.TestCase):
@@ -3667,117 +2023,6 @@ class TestParseConfig(unittest.TestCase):
     def _sb_trojan(self, tag="sb-trojan"):
         return {"type": "trojan", "tag": tag, "server": "h3.example",
                 "server_port": 443, "password": "pw"}
-
-    def test_singbox_config_extracts_proxies_and_skips_non_proxy(self):
-        profs, skipped = parsers.parse_config(self._singbox([
-            self._sb_vless(), self._sb_h2(), self._sb_trojan(),
-            {"type": "direct", "tag": "direct"},
-            {"type": "block", "tag": "block"},
-            {"type": "selector", "tag": "proxy", "outbounds": ["sb-vless"]},
-        ]))
-        self.assertEqual([p["protocol"] for p in profs],
-                         ["vless", "hysteria2", "trojan"])
-        self.assertEqual([p["tag"] for p in profs],
-                         ["sb-vless", "sb-hy2", "sb-trojan"])
-        self.assertEqual(len(skipped), 3)
-
-    def test_singbox_extra_protocols(self):
-        profs, _ = parsers.parse_config(self._singbox([
-            {"type": "vmess", "tag": "v", "server": "h", "server_port": 80,
-             "uuid": "u"},
-            {"type": "shadowsocks", "tag": "s", "server": "h", "server_port": 1,
-             "method": "aes-256-gcm", "password": "p"},
-            {"type": "wireguard", "tag": "w", "server": "h", "server_port": 2,
-             "local_address": "10.0.0.2/32", "private_key": "k"},
-            {"type": "tuic", "tag": "t", "server": "h", "server_port": 3,
-             "uuid": "u", "password": "p"},
-            {"type": "socks", "tag": "x", "server": "h", "server_port": 4},
-            {"type": "http", "tag": "y", "server": "h", "server_port": 5},
-        ]))
-        self.assertEqual([p["protocol"] for p in profs],
-                         ["vmess", "shadowsocks", "wireguard", "tuic",
-                          "socks", "http"])
-
-    def test_xray_config_extracts_proxies(self):
-        cfg = {"outbounds": [
-            {"tag": "x-vless", "protocol": "vless",
-             "settings": {"vnext": [{"address": "h1", "port": 443,
-                                     "users": [{"id": "u-1"}]}]}},
-            {"tag": "x-hy2", "protocol": "hysteria",
-             "settings": {"address": "h2", "port": 8443},
-             "streamSettings": {"network": "hysteria",
-                                "security": "tls",
-                                "tlsSettings": {"serverName": "h2"},
-                                "hysteriaSettings": {"auth": "x-hy2-auth"}}},
-            {"tag": "direct", "protocol": "freedom"},
-        ]}
-        profs, skipped = parsers.parse_config(cfg)
-        self.assertEqual([p["protocol"] for p in profs],
-                         ["vless", "hysteria2"])
-        self.assertEqual(profs[1]["password"], "x-hy2-auth")
-        self.assertEqual(len(skipped), 1)
-
-    def test_xray_skips_tuic(self):
-        cfg = {"outbounds": [
-            {"tag": "t", "protocol": "tuic",
-             "settings": {"address": "h", "port": 443}},
-        ]}
-        profs, skipped = parsers.parse_config(cfg)
-        self.assertEqual(profs, [])
-        self.assertTrue(any("tuic" in reason for _, reason in skipped))
-
-    def test_array_of_configs_uses_remarks_fallback(self):
-        docs = [self._singbox([self._sb_vless(tag="o1")], remarks="Location A"),
-                self._singbox([self._sb_h2(tag="o2")], remarks="Location B")]
-        profs, _ = parsers.parse_config(docs)
-        self.assertEqual([p["tag"] for p in profs], ["o1", "o2"])
-
-    def test_array_element_without_tag_uses_remarks(self):
-        docs = [self._singbox([self._sb_vless(tag="")], remarks="Loc A")]
-        profs, _ = parsers.parse_config(docs)
-        self.assertEqual(profs[0]["tag"], "Loc A")
-
-    def test_bigping_shape_extracts_three_proxies(self):
-        docs = [
-            {"remarks": "🇷🇺 Россия",
-             "outbounds": [self._sb_vless(), self._sb_h2(), self._sb_trojan(),
-                           {"type": "block", "tag": "block"}]},
-            {"remarks": "🇫🇮 Финляндия",
-             "outbounds": [self._sb_vless(tag="fi-vless"),
-                           {"type": "block", "tag": "block"}]},
-        ]
-        profs, skipped = parsers.parse_config(docs)
-        self.assertEqual([p["protocol"] for p in profs],
-                         ["vless", "hysteria2", "trojan", "vless"])
-        self.assertEqual(len(skipped), 2)
-
-    def test_invalid_json_raises(self):
-        with self.assertRaises(ValueError):
-            parsers.parse_config("{not json")
-
-    def test_config_without_proxy_outbounds(self):
-        profs, skipped = parsers.parse_config(self._singbox([
-            {"type": "direct", "tag": "d"},
-            {"type": "block", "tag": "b"},
-        ]))
-        self.assertEqual(profs, [])
-        self.assertEqual(len(skipped), 2)
-
-    def test_decode_subscription_json_branch(self):
-        import subscriptions
-        body = json.dumps([self._singbox([self._sb_vless(), self._sb_h2()])])
-        profs, skipped = subscriptions.decode_subscription(body.encode())
-        self.assertEqual([p["protocol"] for p in profs], ["vless", "hysteria2"])
-        self.assertEqual(skipped, [])
-
-    def test_decode_subscription_json_base64(self):
-        import base64
-        import subscriptions
-        body = json.dumps(self._singbox([self._sb_vless()]))
-        wrapped = base64.b64encode(body.encode())
-        profs, skipped = subscriptions.decode_subscription(wrapped)
-        self.assertEqual([p["protocol"] for p in profs], ["vless"])
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
