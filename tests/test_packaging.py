@@ -15,7 +15,7 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, ".."))
 ADDON = "service.advancedproxy"
-VERSION = "0.4.4"
+VERSION = "0.4.5"
 SB_VERSION = "1.13.15"
 XR_VERSION = "26.7.28"
 UNIVERSAL_PLATFORMS = (

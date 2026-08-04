@@ -92,9 +92,16 @@ def _profile_lines(text):
 
 
 def fetch(url, timeout=10, max_bytes=MAX_BYTES):
-    """Download URL with a total size cap. Returns bytes; raises on error."""
+    """Download URL with a total size cap. Returns bytes; raises on error.
+
+    Kodi exports its own proxy settings to add-ons as http_proxy/https_proxy
+    environment variables. The proxy this add-on itself manages may not be up
+    yet (or may have fallen back to another port), so subscription fetches go
+    out directly, never through that proxy.
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     request = urllib.request.Request(url, headers={"User-Agent": "advancedproxy"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with opener.open(request, timeout=timeout) as response:
         buf = io.BytesIO()
         while True:
             chunk = response.read(65536)

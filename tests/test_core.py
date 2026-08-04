@@ -3330,12 +3330,64 @@ class _FakeProfileStore(object):
         return self.removed
 
 
+class _FakeResponse(object):
+    def __init__(self, body):
+        self._body = body
+        self._pos = 0
+
+    def read(self, size=-1):
+        if size < 0:
+            size = len(self._body) - self._pos
+        chunk = self._body[self._pos:self._pos + size]
+        self._pos += len(chunk)
+        return chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeOpener(object):
+    def __init__(self, open_impl):
+        self.open_impl = open_impl
+        self.handlers = [_FakeProxyHandler()]
+
+    def open(self, request, timeout=10):
+        return self.open_impl(self, request, timeout)
+
+
+class _FakeProxyHandler(object):
+    pass
+
+
 class TestSubscriptionDecode(unittest.TestCase):
     """decode_subscription: plain text, base64, JSON, fallback order."""
 
     def setUp(self):
         import subscriptions  # noqa: E402
         self.subscriptions = subscriptions
+
+    def test_fetch_ignores_kodi_proxy_environment(self):
+        # Kodi exports its proxy settings as http_proxy/https_proxy for
+        # add-ons; the local proxy may be on a fallback port or not up yet,
+        # so subscription fetches must go out directly, not through it.
+        import urllib.request
+        captured = {}
+
+        def fake_opener_open(opener, request, timeout=10):
+            captured["handler"] = type(opener.handlers[0]).__name__
+            captured["timeout"] = timeout
+            return _FakeResponse(b"direct-bytes")
+
+        with patch.object(urllib.request, "build_opener",
+                          side_effect=lambda *a, **k: _FakeOpener(
+                              fake_opener_open)):
+            body = self.subscriptions.fetch("https://example.com/sub", timeout=7)
+        self.assertEqual(body, b"direct-bytes")
+        self.assertEqual(captured["handler"], "_FakeProxyHandler")
+        self.assertEqual(captured["timeout"], 7)
 
     def test_plain_text_with_one_vless_line_decodes(self):
         profs, skipped = self.subscriptions.decode_subscription(VLESS.encode())

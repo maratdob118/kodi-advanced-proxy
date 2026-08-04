@@ -217,10 +217,16 @@ def sync_geo_databases(settings, fetch=None, max_bytes=512 << 20):
 
 
 def _geo_fetch(url, timeout=60):
-    """Download a geo database with a plain HTTP GET (no proxy)."""
+    """Download a geo database with a plain HTTP GET (no proxy).
+
+    Kodi exports its own proxy settings to add-ons as http_proxy/https_proxy
+    environment variables; the local proxy may not be up yet, so geo database
+    downloads go out directly.
+    """
     import urllib.request
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     request = urllib.request.Request(url, headers={"User-Agent": "advancedproxy"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with opener.open(request, timeout=timeout) as response:
         return response.read()
 
 

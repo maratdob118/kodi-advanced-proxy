@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="service.advancedproxy" name="Advanced Proxy" version="0.4.4" provider-name="advancedproxy">
+<addon id="service.advancedproxy" name="Advanced Proxy" version="0.4.5" provider-name="advancedproxy">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
@@ -18,6 +18,9 @@
         <website></website>
         <source></source>
         <news>
+0.4.5
+- Fix subscription and geo database downloads failing with Connection refused on some devices: Kodi exports its proxy settings to add-ons as http_proxy/https_proxy, so downloads were routed through the local proxy even when it was not up yet or on a fallback port. They now go out directly.
+
 0.4.4
 - Xray now also serves an HTTP proxy on the same port as SOCKS, so Kodi addons that use an HTTP proxy (for example YouTube) work with the xray engine
 
@@ -46,6 +49,9 @@
 - New setting "Auto-configure Kodi proxy" (on by default) controls the whole integration
 - Releases now ship eight per-platform ZIPs plus one universal ZIP containing every platform's engines, all with the sing-box and Xray license texts and third-party notices
 - Advanced Proxy can be installed and updated from inside Kodi through the new BigPing repository over HTTPS
+
+0.4.5 (RU)
+- Исправлено скачивание подписок и гео-баз, падавшее с Connection refused на некоторых устройствах: Kodi экспортирует свои настройки прокси аддонам через http_proxy/https_proxy, из-за чего загрузки шли через локальный прокси, даже когда он ещё не поднят или на запасном порту. Теперь они идут напрямую.
 
 0.4.4 (RU)
 - Xray теперь также слушает HTTP-прокси на том же порту, что и SOCKS, поэтому аддоны Kodi, использующие HTTP-прокси (например, YouTube), работают с движком xray
