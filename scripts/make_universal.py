@@ -222,8 +222,14 @@ def write_universal(path, entries):
         raise
 
 
-def assemble(repo, dist, version, output):
+def assemble(repo, dist, version, output, platforms_override=None):
     platforms = read_platforms(os.path.join(repo, "build.sh"))
+    if platforms_override:
+        unknown = sorted(set(platforms_override) - set(platforms))
+        if unknown:
+            raise AssemblyError("unknown platforms: %s (build.sh ships: %s)"
+                                % (", ".join(unknown), ", ".join(platforms)))
+        platforms = [p for p in platforms if p in platforms_override]
     sources = {platform: discover_platform_zip(dist, platform, version)
                for platform in platforms}
     entries = merge(platforms, sources)
@@ -258,6 +264,8 @@ def main(argv=None):
                                           "(default: from addon.xml)")
     parser.add_argument("--output", help="output path (default: "
                                          "<dist>/%s-<version>.zip)" % ADDON)
+    parser.add_argument("--platforms", help="comma-separated subset of "
+                        "build.sh platforms to merge (default: all)")
     args = parser.parse_args(argv)
 
     repo = os.path.abspath(args.repo)
@@ -268,6 +276,12 @@ def main(argv=None):
         parser.error("dist dir not found: %s" % dist)
     if args.version is not None and not VERSION_RE.match(args.version):
         parser.error("version must be X.Y.Z: %s" % args.version)
+    platforms_override = None
+    if args.platforms:
+        platforms_override = [p for p in args.platforms.split(",") if p]
+        for platform in platforms_override:
+            if not PLATFORM_RE.match(platform):
+                parser.error("invalid platform in --platforms: %r" % platform)
 
     try:
         if args.version:
@@ -276,7 +290,8 @@ def main(argv=None):
             addon_xml = os.path.join(repo, ADDON_XML)
             version = parse_addon_version(read_text(addon_xml, addon_xml), addon_xml)
         output = args.output or os.path.join(dist, "%s-%s.zip" % (ADDON, version))
-        platforms, entries = assemble(repo, dist, version, output)
+        platforms, entries = assemble(repo, dist, version, output,
+                                      platforms_override)
     except AssemblyError as error:
         print("make_universal: %s" % error, file=sys.stderr)
         return 1

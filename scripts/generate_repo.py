@@ -1,68 +1,51 @@
 #!/usr/bin/env python3
-"""Generate the text-only kodi-addons tree.
+"""Generate the kodi-addons repository tree (classic Kodi layout).
 
-The target repository must stay text-only: the universal payload ZIP is about
-235 MB and GitHub refuses any Git blob over 100 MB.  So this script reads the
-universal ZIP but never copies it.  It emits the repository index plus a
-manifest that tells the target Pages workflow which public Release asset to
-download, how to verify it, and where to publish it:
+Turns the two source manifests and one payload ZIP into the tree that
+maratdob118/kodi-addons commits and serves from raw.githubusercontent.com:
 
-    <out>/addons.xml                    index of every offered addon version
-    <out>/addons.xml.md5                md5 Kodi polls for index changes
-    <out>/manifest.json                 download/publish plan for Pages
-    <out>/README.md                     what the tree is and how to install
-    <out>/repository.bigping/addon.xml  metadata Pages packs into the repo ZIP
+    zips/addons.xml
+    zips/addons.xml.md5
+    zips/service.advancedproxy/addon.xml
+    zips/service.advancedproxy/service.advancedproxy-<version>.zip
+    zips/repository.maratdob118/addon.xml
+    zips/repository.maratdob118/repository.maratdob118-<version>.zip
+    README.md
 
-Both canonical datadir paths compose as <addon.id>/<addon.id>-<version>.zip,
-which is the only shape Kodi resolves from an `addons.xml` entry.
-
-The recorded SHA256 and size are measured on the LOCAL universal ZIP, so this
-must run against the exact artifact that is uploaded to the release, in the same
-CI step as that upload.  Nothing here is fetched from the network and nothing
-here proves the release asset exists: the manifest states the expected digest,
-and the Pages workflow is instructed to download the asset, recompute, compare,
-and abort the deployment on any mismatch.
-
-The output is byte-reproducible: identical inputs give identical bytes, no
-timestamps or filesystem order leak in, and a run replaces the previous tree
-wholesale so stale files cannot survive a regeneration.
+Kodi resolves every addon's ZIP as <datadir>/<id>/<id>-<version>.zip, where
+<datadir> is the repository addon's datadir URL. The payload ZIP is copied
+verbatim; the repository addon ZIP is packed from its addon.xml. Nothing is
+committed unless it is safe: identities and versions are checked against the
+source manifests, the payload ZIP must be a single-root archive carrying the
+matching addon.xml, and the output tree is replaced atomically.
 
 Exit 0 on success, 1 when generation is refused, 2 on usage errors.
 """
-
 import argparse
 import hashlib
-import json
 import os
-import re
 import shutil
+import stat
 import sys
 import tempfile
-import xml.etree.ElementTree as ET
 import zipfile
-import zlib
+import xml.etree.ElementTree as ET
 
 PAYLOAD = "service.advancedproxy"
-REPOSITORY = "repository.bigping"
-PAGES = "https://maratdob118.github.io/kodi-addons/"
-SOURCE_REPO = "maratdob118/kodi-advanced-proxy"
-RELEASE_ASSET = "https://github.com/%(repo)s/releases/download/%(tag)s/%(asset)s"
-DIR_MODE = 0o755
-FILE_MODE = 0o644
-ADDONS_XML = "addons.xml"
-ADDONS_XML_MD5 = ADDONS_XML + ".md5"
-MANIFEST = "manifest.json"
+REPOSITORY = "repository.maratdob118"
+ADDONS_XML = "zips/addons.xml"
+ADDONS_XML_MD5 = "zips/addons.xml.md5"
+README = "README.md"
 XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-SCHEMA = 1
-VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+VERSION_RE = r"^[0-9]+\.[0-9]+\.[0-9]+$"
+DIR_MODE = stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
+FILE_MODE = stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH
 CHUNK = 1 << 20
 
 
 class GenerationError(Exception):
     """A refusal to generate: inputs are missing, inconsistent or unsafe."""
 
-
-# -- inputs ------------------------------------------------------------------
 
 def read_manifest(path, addon_id):
     """Parse the addon.xml at PATH, checking its identity and version."""
@@ -82,94 +65,51 @@ def read_manifest(path, addon_id):
         raise GenerationError("%s declares id %r, expected %r"
                               % (path, root.get("id"), addon_id))
     version = root.get("version") or ""
-    if not VERSION_RE.match(version):
+    if not __import__("re").match(VERSION_RE, version):
         raise GenerationError("%s declares a non X.Y.Z version: %r"
                               % (path, version))
     return root, version, raw
 
 
-def parse_assets(root, path):
-    """(kind, reference) for every asset the manifest declares."""
-    metadata = next((element for element in root.iter("extension")
-                     if element.get("point") == "xbmc.addon.metadata"), None)
-    assets = None if metadata is None else metadata.find("assets")
-    declared = []
-    for child in assets if assets is not None else ():
-        reference = (child.text or "").strip()
-        if not reference:
-            continue
-        if reference.startswith("/") or ".." in reference.split("/"):
-            raise GenerationError("%s declares an unsafe <%s> asset: %r"
-                                  % (path, child.tag, reference))
-        declared.append((child.tag, reference))
-    return declared
-
-
-def read_universal(path, version, assets):
-    """Check the universal ZIP, hash it, and locate the art Pages must publish."""
-    expected = "%s-%s.zip" % (PAYLOAD, version)
-    if os.path.basename(path) != expected:
-        raise GenerationError("universal zip must be named %s, got %s"
-                              % (expected, os.path.basename(path)))
-    if not os.path.isfile(path):
-        raise GenerationError("universal zip not found: %s" % path)
-    inner = "%s/addon.xml" % PAYLOAD
-    art = []
+def check_payload(payload_zip, payload_version):
+    """Verify the payload ZIP: single root, matching addon.xml, readable."""
+    if not os.path.isfile(payload_zip):
+        raise GenerationError("payload zip not found: %s" % payload_zip)
     try:
-        with zipfile.ZipFile(path) as archive:
+        with zipfile.ZipFile(payload_zip) as archive:
             names = archive.namelist()
             roots = sorted({name.split("/")[0] for name in names})
             if roots != [PAYLOAD]:
                 raise GenerationError(
-                    "universal zip must hold one %s/ root, found: %s"
+                    "payload zip must hold one %s/ root, found: %s"
                     % (PAYLOAD, ", ".join(roots)))
+            inner = "%s/addon.xml" % PAYLOAD
             if inner not in names:
-                raise GenerationError("universal zip has no %s: %s"
-                                      % (inner, path))
+                raise GenerationError("payload zip has no %s: %s"
+                                      % (inner, payload_zip))
             embedded = archive.read(inner)
-            for kind, reference in assets:
-                entry = "%s/%s" % (PAYLOAD, reference)
-                if entry not in names:
-                    raise GenerationError(
-                        "%s declares <%s>%s</%s>, but the universal zip has no %s"
-                        % (inner, kind, reference, kind, entry))
-                art.append({
-                    "kind": kind,
-                    "origin": "payload-zip",
-                    "source": entry,
-                    "path": entry,
-                    "sha256": hashlib.sha256(archive.read(entry)).hexdigest(),
-                })
-    except (zipfile.BadZipFile, zlib.error, EOFError, ValueError) as error:
-        raise GenerationError("unreadable universal zip %s: %s" % (path, error))
-    except OSError as error:
-        raise GenerationError("cannot open %s: %s" % (path, error))
+    except (zipfile.BadZipFile, OSError, ValueError) as error:
+        raise GenerationError("unreadable payload zip %s: %s"
+                              % (payload_zip, error))
     try:
         embedded_version = ET.fromstring(embedded).get("version")
     except ET.ParseError as error:
         raise GenerationError("%s inside %s is not well-formed XML: %s"
-                              % (inner, path, error))
-    if embedded_version != version:
+                              % (inner, payload_zip, error))
+    if embedded_version != payload_version:
         raise GenerationError("%s inside %s says version %s, expected %s"
-                              % (inner, os.path.basename(path),
-                                 embedded_version, version))
+                              % (inner, os.path.basename(payload_zip),
+                                 embedded_version, payload_version))
     digest = hashlib.sha256()
     size = 0
     try:
-        with open(path, "rb") as stream:
+        with open(payload_zip, "rb") as stream:
             for block in iter(lambda: stream.read(CHUNK), b""):
                 digest.update(block)
                 size += len(block)
     except OSError as error:
-        raise GenerationError("cannot hash %s: %s" % (path, error))
-    return {"sha256": digest.hexdigest(), "size": size, "art": art}
-
-
-# -- generated text ----------------------------------------------------------
-
-def canonical_path(addon_id, version):
-    """The one datadir path Kodi resolves for an addons.xml entry."""
-    return "%s/%s-%s.zip" % (addon_id, addon_id, version)
+        raise GenerationError("cannot hash %s: %s" % (payload_zip, error))
+    return {"sha256": digest.hexdigest(), "size": size}
 
 
 def build_addons_xml(roots):
@@ -182,83 +122,40 @@ def build_addons_xml(roots):
     return text.encode("utf-8")
 
 
-def build_manifest(payload_version, repository_version, universal, md5):
-    """The download/publish plan the target Pages workflow consumes.
-
-    Kodi resolves a ZIP's digest from a content-sha256 response header first and
-    falls back to a <zip>.sha256 sidecar served next to it.  Pages cannot set
-    response headers, so the sidecar is the only mechanism available here and
-    every published ZIP needs one.
-    """
-    tag = "v%s" % payload_version
-    asset = "%s-%s.zip" % (PAYLOAD, payload_version)
-    addons = [
-        {
-            "id": PAYLOAD,
-            "version": payload_version,
-            "origin": "release-asset",
-            "release": {"repo": SOURCE_REPO, "tag": tag, "asset": asset},
-            "url": RELEASE_ASSET % {"repo": SOURCE_REPO, "tag": tag,
-                                    "asset": asset},
-            "sha256": universal["sha256"],
-            "sha256_path": canonical_path(PAYLOAD, payload_version) + ".sha256",
-            "size": universal["size"],
-            "path": canonical_path(PAYLOAD, payload_version),
-            "zip_root": "%s/" % PAYLOAD,
-            "art": universal["art"],
-        },
-        {
-            "id": REPOSITORY,
-            "version": repository_version,
-            "origin": "build",
-            "metadata": "%s/addon.xml" % REPOSITORY,
-            "path": canonical_path(REPOSITORY, repository_version),
-            "sha256_path": canonical_path(REPOSITORY,
-                                          repository_version) + ".sha256",
-            "zip_root": "%s/" % REPOSITORY,
-        },
-    ]
-    document = {
-        "schema": SCHEMA,
-        "generator": "scripts/generate_repo.py",
-        "datadir": PAGES,
-        "verification": {
-            "algorithm": "sha256",
-            "policy": "download-then-compare",
-            "measured_on": "local-build-artifact",
-            "remote_verified": False,
-            "instruction":
-                "For every addon with origin release-asset: download url, "
-                "recompute sha256 and size, compare them against the recorded "
-                "values, and abort the deployment on any mismatch. The recorded "
-                "digest is an expectation measured on the local build artifact "
-                "staged for the release upload; nothing here was fetched from "
-                "the network. Publish each zip at path, write its lowercase hex "
-                "digest to sha256_path, pack build entries so their single root "
-                "directory is zip_root, and extract every art entry from the "
-                "payload zip source to its path.",
-        },
-        "index": {
-            "addons_xml": ADDONS_XML,
-            "addons_xml_md5": ADDONS_XML_MD5,
-            "md5": md5,
-        },
-        "addons": sorted(addons, key=lambda entry: entry["id"]),
-    }
-    dumped = json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False)
-    return (dumped + "\n").encode("utf-8")
+def pack_repository_zip(addon_xml_bytes, version):
+    """Pack the repository addon into a deterministic single-root ZIP."""
+    buffer = tempfile.SpooledTemporaryFile(max_size=1 << 20)
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        info = zipfile.ZipInfo("%s/addon.xml" % REPOSITORY,
+                               (1980, 1, 1, 0, 0, 0))
+        info.create_system = 3
+        info.external_attr = FILE_MODE << 16
+        archive.writestr(info, addon_xml_bytes)
+    buffer.seek(0)
+    payload = buffer.read()
+    buffer.close()
+    return payload
 
 
 def build_readme(payload_version, repository_version):
-    return ("""# BigPing Kodi repository
+    return ("""# maratdob118 Kodi repository
 
 Generated tree. Do not edit by hand: every file here is produced by
-`scripts/generate_repo.py` in [maratdob118/kodi-advanced-proxy](https://github.com/maratdob118/kodi-advanced-proxy)
-and overwritten on the next run.
+`scripts/generate_repo.py` in
+[maratdob118/kodi-advanced-proxy](https://github.com/maratdob118/kodi-advanced-proxy)
+and pushed by `scripts/publish_repo.py` on every release.
 
-This repository stays text-only in Git. Add-on ZIPs are never committed; they
-are published as a GitHub Pages deployment, because the universal Advanced
-Proxy ZIP is far larger than GitHub's 100 MB blob limit.
+## Installing
+
+1. Download `%(repository_path)s` from this repository
+   (`https://raw.githubusercontent.com/maratdob118/kodi-addons/main/%(repository_path)s`).
+2. In Kodi: **Add-ons -> Install from zip file**, pick that ZIP.
+3. **Add-ons -> Install from repository -> maratdob118 Repository ->
+   Services -> Advanced Proxy**.
+
+Kodi 19 (Matrix) or newer is required. Updates arrive automatically once the
+repository add-on is installed; Kodi re-reads
+`https://raw.githubusercontent.com/maratdob118/kodi-addons/main/%(index)s`.
 
 ## Contents
 
@@ -266,57 +163,17 @@ Proxy ZIP is far larger than GitHub's 100 MB blob limit.
 | --- | --- |
 | `%(index)s` | index of every add-on version this repository offers |
 | `%(md5)s` | md5 of `%(index)s`; Kodi polls it to detect changes |
-| `%(manifest)s` | which Release asset Pages downloads, its SHA256, and where it is published |
-| `%(repository)s/addon.xml` | metadata Pages packs into the repository add-on ZIP |
-
-## Publishing (what the Pages workflow must do)
-
-`%(manifest)s` is the whole contract. For each entry under `addons`:
-
-- `origin: release-asset` — download `url`, recompute its SHA256 and size,
-  compare them against the recorded `sha256`/`size`, and abort the deployment on
-  any mismatch. Those values are expectations measured on the build artifact
-  staged for the release upload, not properties verified against the remote
-  asset; `release.tag` pins which release the bytes must come from.
-- `origin: build` — pack `metadata` into a ZIP whose single top-level directory
-  is `zip_root`. Kodi rejects an add-on ZIP with any other root.
-- Publish every ZIP at `path` and write its lowercase hex digest to
-  `sha256_path`. Kodi reads a `content-sha256` response header first and falls
-  back to that `<zip>.sha256` sidecar; Pages cannot set response headers, so the
-  sidecar is the only mechanism available and is mandatory.
-- Extract every `art` entry from the payload ZIP at `source` and publish it at
-  `path`, so the icon and fanart that `%(index)s` resolves actually exist.
-
-## Offered add-ons
-
-| Add-on | Version | Published path |
-| --- | --- | --- |
-| `%(repository)s` | %(repository_version)s | `%(repository_path)s` |
-| `%(payload)s` | %(payload_version)s | `%(payload_path)s` |
-
-## Installing
-
-1. Download `%(repository_path)s` from %(pages)s
-2. In Kodi: **Add-ons -> Install from zip file**, pick that ZIP.
-3. **Add-ons -> Install from repository -> BigPing -> Services -> Advanced Proxy**.
-
-Kodi 20 (Nexus) or newer is required. Updates arrive automatically once the
-repository add-on is installed; Kodi re-reads %(pages)s%(index)s.
+| `%(payload_path)s` | Advanced Proxy payload (all platforms the repo ships) |
+| `%(repository_path)s` | the repository add-on users install first |
 """ % {
         "index": ADDONS_XML,
         "md5": ADDONS_XML_MD5,
-        "manifest": MANIFEST,
-        "pages": PAGES,
         "payload": PAYLOAD,
-        "payload_version": payload_version,
-        "payload_path": canonical_path(PAYLOAD, payload_version),
-        "repository": REPOSITORY,
-        "repository_version": repository_version,
-        "repository_path": canonical_path(REPOSITORY, repository_version),
+        "payload_path": "zips/%s/%s-%s.zip" % (PAYLOAD, PAYLOAD, payload_version),
+        "repository_path": "zips/%s/%s-%s.zip"
+                           % (REPOSITORY, REPOSITORY, repository_version),
     }).encode("utf-8")
 
-
-# -- output ------------------------------------------------------------------
 
 def check_output(out, repo):
     """Refuse output paths that are not ours to replace."""
@@ -343,7 +200,7 @@ def check_output(out, repo):
 
 
 def normalize_modes(root):
-    """Pin the served tree's modes; mkdtemp makes 0700 and umask varies."""
+    """Pin the generated tree's modes; mkdtemp makes 0700 and umask varies."""
     os.chmod(root, DIR_MODE)
     for directory, subdirectories, names in os.walk(root):
         for name in subdirectories:
@@ -385,8 +242,8 @@ def replace_tree(out, files):
             shutil.rmtree(scratch, ignore_errors=True)
 
 
-def generate(repo, out, universal, version=None):
-    """Build the whole tree in memory, then publish it atomically."""
+def generate(repo, out, payload_zip, version=None):
+    """Build the whole tree in memory, then write it atomically."""
     payload_xml = os.path.join(repo, PAYLOAD, "addon.xml")
     repository_xml = os.path.join(repo, REPOSITORY, "addon.xml")
     payload_root, payload_version, _ = read_manifest(payload_xml, PAYLOAD)
@@ -397,25 +254,29 @@ def generate(repo, out, universal, version=None):
                               % (payload_xml, payload_version, version))
 
     out = check_output(out, repo)
-    universal = universal or os.path.join(
+    payload_zip = payload_zip or os.path.join(
         repo, "dist", "%s-%s.zip" % (PAYLOAD, payload_version))
-    assets = parse_assets(payload_root, payload_xml)
-    measured = read_universal(universal, payload_version, assets)
+    measured = check_payload(payload_zip, payload_version)
 
     addons_xml = build_addons_xml([payload_root, repository_root])
     md5 = hashlib.md5(addons_xml).hexdigest()
+    repository_zip = pack_repository_zip(repository_raw, repository_version)
     files = {
         ADDONS_XML: addons_xml,
         ADDONS_XML_MD5: (md5 + "\n").encode("utf-8"),
-        MANIFEST: build_manifest(payload_version, repository_version,
-                                 measured, md5),
-        "README.md": build_readme(payload_version, repository_version),
-        os.path.join(REPOSITORY, "addon.xml"): repository_raw,
+        README: build_readme(payload_version, repository_version),
+        os.path.join("zips", PAYLOAD, "addon.xml"):
+            open(payload_xml, "rb").read(),
+        os.path.join("zips", PAYLOAD, "%s-%s.zip" % (PAYLOAD, payload_version)):
+            open(payload_zip, "rb").read(),
+        os.path.join("zips", REPOSITORY, "addon.xml"): repository_raw,
+        os.path.join("zips", REPOSITORY,
+                     "%s-%s.zip" % (REPOSITORY, repository_version)):
+            repository_zip,
     }
     replace_tree(out, files)
     return {"out": out, "md5": md5, "sha256": measured["sha256"],
-            "size": measured["size"], "art": len(measured["art"]),
-            "payload_version": payload_version,
+            "size": measured["size"], "payload_version": payload_version,
             "repository_version": repository_version}
 
 
@@ -423,14 +284,14 @@ def main(argv=None):
     here = os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser(
         prog="generate_repo.py",
-        description="Generate the text-only kodi-addons tree.")
+        description="Generate the kodi-addons repository tree.")
     parser.add_argument("--repo", default=os.path.dirname(here),
                         help="repo root holding the addon sources")
     parser.add_argument("--out", required=True,
                         help="directory to (re)generate; replaced wholesale")
-    parser.add_argument("--universal", help="universal payload ZIP (default: "
-                                            "<repo>/dist/%s-<version>.zip)"
-                                            % PAYLOAD)
+    parser.add_argument("--payload", help="payload ZIP (default: "
+                                          "<repo>/dist/%s-<version>.zip)"
+                                          % PAYLOAD)
     parser.add_argument("--version", help="expected addon version X.Y.Z "
                                           "(default: from addon.xml)")
     args = parser.parse_args(argv)
@@ -438,13 +299,13 @@ def main(argv=None):
     repo = os.path.abspath(args.repo)
     if not os.path.isdir(repo):
         parser.error("repo dir not found: %s" % repo)
-    if args.version is not None and not VERSION_RE.match(args.version):
+    if args.version is not None and not __import__("re").match(VERSION_RE,
+                                                               args.version):
         parser.error("version must be X.Y.Z: %s" % args.version)
 
     try:
         result = generate(repo, args.out,
-                          os.path.abspath(args.universal) if args.universal
-                          else None,
+                          os.path.abspath(args.payload) if args.payload else None,
                           args.version)
     except GenerationError as error:
         print("generate_repo: %s" % error, file=sys.stderr)
