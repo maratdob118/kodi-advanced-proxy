@@ -184,7 +184,7 @@
                 </setting>
                 <setting id="subscription_add" type="action" label="32233" help="32233">
                     <level>0</level>
-                    <data>RunPlugin(service.advancedproxy?action=sub_add&amp;url=$[subscription_url])</data>
+                    <data>RunPlugin(service.advancedproxy?action=sub_add)</data>
                     <control type="button" format="action">
                         <close>true</close>
                     </control>

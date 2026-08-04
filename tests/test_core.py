@@ -1297,6 +1297,10 @@ class TestPluginArgs(unittest.TestCase):
 
 
 class TestMeasureLatencies(unittest.TestCase):
+    def test_real_prober_module_imports(self):
+        self.assertTrue(hasattr(helpers, "time"))
+        self.assertTrue(callable(helpers._real_prober))
+
     def test_measures_enabled_profiles_only(self):
         profs = [
             {"tag": "A", "server": "h1", "port": 1, "enabled": True},
@@ -1326,6 +1330,30 @@ class TestMeasureLatencies(unittest.TestCase):
         result = helpers.measure_latencies(profs, prober=fake_prober)
         self.assertEqual(result["ok"], 5)
         self.assertIsNone(result["fail"])
+
+    def test_concurrency_is_bounded(self):
+        # Many profiles must not be probed all at once: that saturates the
+        # device and makes every probe time out.
+        import threading
+        import time as _time
+        active = []
+        peak = [0]
+        lock = threading.Lock()
+
+        def slow_prober(host, port, timeout):
+            with lock:
+                active.append(1)
+                peak[0] = max(peak[0], len(active))
+            _time.sleep(0.05)
+            with lock:
+                active.pop()
+            return 5
+
+        profs = [{"tag": "p%d" % i, "server": "h", "port": i, "enabled": True}
+                 for i in range(24)]
+        helpers.measure_latencies(profs, prober=slow_prober, timeout=0.5)
+        self.assertLessEqual(peak[0], 8,
+                             "at most 8 probes may run concurrently")
 
     def test_concurrent_not_serial(self):
         profs = [
@@ -1536,12 +1564,6 @@ class TestProfileStoreActivation(unittest.TestCase):
     def test_add_first_sets_active(self):
         self.store.add_uri(VLESS)
         self.assertEqual(self.store.active_tag, "AUTO:VLESS")
-
-
-class TestMeasureLatencies(unittest.TestCase):
-    def test_real_prober_module_imports(self):
-        self.assertTrue(hasattr(helpers, "time"))
-        self.assertTrue(callable(helpers._real_prober))
 
 
 class _FakeBin(object):
@@ -1821,6 +1843,33 @@ class TestSubscriptionUiContract(unittest.TestCase):
         self.assertIn("helpers.disabled_protocols()", body,
                       "manual refresh must skip disabled protocols")
         self.assertIn("disabled_protocols=", body)
+
+    def test_default_add_accepts_subscription_urls(self):
+        path = os.path.join(HERE, "..", "service.advancedproxy", "default.py")
+        with open(path) as f:
+            src = f.read()
+        start = src.index("def _action_add(")
+        end = src.index("\ndef ", start + 1)
+        body = src[start:end]
+        self.assertIn("_action_sub_add(handle, kb)", body,
+                      "the Add dialog must route through sub_add, which "
+                      "detects subscription URLs and profiles")
+        sub_add_start = src.index("def _action_sub_add(")
+        sub_add_end = src.index("\ndef ", sub_add_start + 1)
+        sub_add_body = src[sub_add_start:sub_add_end]
+        self.assertIn("is_subscription_url", sub_add_body,
+                      "sub_add must detect subscription URLs")
+        self.assertIn("sub_store.add", sub_add_body)
+
+    def test_default_sub_add_reads_settings_url_when_param_missing(self):
+        path = os.path.join(HERE, "..", "service.advancedproxy", "default.py")
+        with open(path) as f:
+            src = f.read()
+        start = src.index("def _action_sub_add(")
+        end = src.index("\ndef ", start + 1)
+        body = src[start:end]
+        self.assertIn('getSetting("subscription_url")', body,
+                      "sub_add must fall back to the settings URL field")
 
     def test_settings_xml_has_subscriptions_category(self):
         path = os.path.join(HERE, "..", "service.advancedproxy",

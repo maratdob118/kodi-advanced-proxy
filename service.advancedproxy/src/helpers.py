@@ -274,25 +274,27 @@ def _real_prober(host, port, timeout):
         return None
 
 
-def measure_latencies(profiles, prober=None, timeout=2.0):
+def measure_latencies(profiles, prober=None, timeout=2.0, max_concurrent=8):
     """Return {tag: ms_or_None} for every profile.
 
     Disabled profiles are reported as None and are not probed.
-    Enabled profiles are probed concurrently so total wall time is capped
-    near a single timeout.
+    Enabled profiles are probed concurrently (bounded by MAX_CONCURRENT so a
+    large subscription does not saturate the device and time everything out).
     """
     prober = prober or _real_prober
     results = {}
     enabled = [p for p in profiles if p.get("enabled", True)]
     lock = threading.Lock()
+    semaphore = threading.BoundedSemaphore(max_concurrent)
 
     def run(p):
-        try:
-            ms = prober(p["server"], p["port"], timeout)
-        except (socket.error, OSError):
-            ms = None
-        with lock:
-            results[p["tag"]] = ms
+        with semaphore:
+            try:
+                ms = prober(p["server"], p["port"], timeout)
+            except (socket.error, OSError):
+                ms = None
+            with lock:
+                results[p["tag"]] = ms
 
     threads = [threading.Thread(target=run, args=(p,)) for p in enabled]
     for t in threads:
