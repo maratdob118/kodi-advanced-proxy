@@ -235,6 +235,13 @@ def build_config(profiles, settings, active_tag=None):
                 "settings": {"auth": "noauth", "udp": True},
                 "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
             },
+            {
+                "tag": "http-in",
+                "listen": "127.0.0.1",
+                "port": int(settings.get("local_port", 1080)),
+                "protocol": "http",
+                "settings": {},
+            },
         ],
         "outbounds": outbounds + [
             {"tag": "direct", "protocol": "freedom"},

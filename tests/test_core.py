@@ -701,6 +701,14 @@ class TestBuildXray(unittest.TestCase):
         socks = [i for i in cfg["inbounds"] if i["protocol"] == "socks"][0]
         self.assertEqual(socks["port"], 1080)
 
+    def test_http_inbound_serves_kodi_http_proxy(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(profs, self._settings())
+        http = [i for i in cfg["inbounds"] if i["protocol"] == "http"]
+        self.assertEqual(len(http), 1)
+        self.assertEqual(http[0]["port"], 1080)
+        self.assertEqual(http[0]["listen"], "127.0.0.1")
+
     def _xray_outbound(self, prof, protocol):
         cfg, skipped = build_xray.build_config([prof], self._settings())
         self.assertEqual(skipped, [])
