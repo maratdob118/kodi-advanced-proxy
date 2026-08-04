@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(ADDON_DIR, "src"))
 
 import supervisor  # noqa: E402
 
-SUB_URL = "https://bigping.duckdns.org/sub/__REDACTED__/urls"
+SUB_URL = "https://example.com/subscription/url"
 
 SETTINGS = {
     "subscription_url": SUB_URL,
