@@ -1,0 +1,98 @@
+name: Update repository from releases
+
+# kodi-addons is a classic Kodi repository: zips/ with addons.xml,
+# addons.xml.md5 and per-addon ZIPs, all committed and served from
+# raw.githubusercontent.com. This workflow keeps it current without any
+# cross-repository token: it polls the source repository's releases, and when
+# a newer addon version exists it downloads the two ARM platform ZIPs, merges
+# them into the repository payload, regenerates the tree with the source
+# repository's own scripts and commits the result back here.
+#
+# This file is a template living in maratdob118/kodi-advanced-proxy
+# (.github/update-repo.yml, deliberately outside .github/workflows/ so it is
+# never executed here). Copy it into kodi-addons/.github/workflows/update-repo.yml
+# once, by hand. The copy is what runs; the template is what the contract
+# tests in tests/test_workflow_contracts.py pin.
+on:
+  schedule:
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-repo
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve the latest addon release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --repo maratdob118/kodi-advanced-proxy \
+                 --json tagName --jq .tagName)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip when this version is already published
+        id: skip
+        run: |
+          if grep -q 'version="${{ steps.release.outputs.version }}"' \
+               zips/addons.xml; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the source repository at the release tag
+        if: steps.skip.outputs.skip != 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: maratdob118/kodi-advanced-proxy
+          ref: ${{ steps.release.outputs.tag }}
+          path: source
+
+      - name: Download the two ARM platform payloads
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p payloads
+          gh release download "${{ steps.release.outputs.tag }}" \
+            --repo maratdob118/kodi-advanced-proxy \
+            --pattern "service.advancedproxy-${{ steps.release.outputs.version }}.linux_arm64.zip" \
+            --pattern "service.advancedproxy-${{ steps.release.outputs.version }}.linux_armv7.zip" \
+            --dir payloads
+
+      - name: Assemble the repository payload and generate the tree
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          python3 source/scripts/make_universal.py \
+            --dist payloads \
+            --version "${{ steps.release.outputs.version }}" \
+            --platforms linux_arm64,linux_armv7 \
+            --output "payloads/repo-payload-${{ steps.release.outputs.version }}.zip"
+          python3 source/scripts/generate_repo.py \
+            --repo source \
+            --out generated \
+            --payload "payloads/repo-payload-${{ steps.release.outputs.version }}.zip" \
+            --version "${{ steps.release.outputs.version }}"
+          cp -r generated/. .
+
+      - name: Commit and push the new version
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          git config user.name "kodi-addons-release-bot"
+          git config user.email "kodi-addons-release-bot@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || \
+            git commit -m "Publish service.advancedproxy ${{ steps.release.outputs.version }}"
+          git push

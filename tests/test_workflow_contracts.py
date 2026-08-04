@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Contract tests for the release workflow.
+"""Contract tests for the release workflow and the repository update template.
 
-`.github/workflows/release.yml` cannot be run locally. These tests pin the
-properties a reviewer would otherwise have to re-derive from YAML every time:
-which job may write, which job may see the cross-repository token, in which
-order the release steps run, that every script flag the workflow passes exists,
-and that no step can leak a secret through argv or a log line.
+`.github/workflows/release.yml` cannot be run locally, and the kodi-addons
+update workflow runs in another repository. These tests pin the properties a
+reviewer would otherwise have to re-derive from YAML every time: which job may
+write, in which order the release steps run, that every script flag the
+workflow passes exists, and that the update template polls the source releases
+and regenerates the classic zips/ tree without any cross-repository token.
 
 Run:  python3 tests/test_workflow_contracts.py
       python3 -m unittest tests.test_workflow_contracts
@@ -25,11 +26,12 @@ sys.path.insert(0, SCRIPTS)
 import publish_repo  # noqa: E402
 
 SOURCE_WORKFLOW = os.path.join(REPO, ".github", "workflows", "release.yml")
+UPDATE_WORKFLOW = os.path.join(REPO, ".github", "update-repo.yml")
 
 PAYLOAD = "service.advancedproxy"
+REPOSITORY = "repository.maratdob118"
 TARGET_REPO = "maratdob118/kodi-addons"
-TOKEN_ENV = "KODI_ADDONS_TOKEN"
-TOKEN_SECRET = "secrets." + TOKEN_ENV
+SOURCE_REPO = "maratdob118/kodi-advanced-proxy"
 MAIN = "refs/heads/main"
 PLATFORMS = ("linux_x64", "linux_x86", "linux_armv7", "linux_arm64",
              "android_arm64", "windows_x64", "darwin_x64", "darwin_arm64")
@@ -87,7 +89,7 @@ def uses_of(document):
 
 
 class TestSourceWorkflow(unittest.TestCase):
-    """The workflow that tests, builds, releases and hands off publication."""
+    """The workflow that tests, builds and releases."""
 
     @classmethod
     def setUpClass(cls):
@@ -135,49 +137,15 @@ class TestSourceWorkflow(unittest.TestCase):
                    if (job.get("permissions") or {}).get("contents") == "write"]
         self.assertEqual(writers, ["release"])
 
-    def test_publish_job_cannot_write_this_repository(self):
-        self.assertEqual(self.job("publish")["permissions"], {"contents": "read"})
-
-    def test_release_and_publish_are_gated_on_a_push_to_main(self):
-        for name in ("release", "publish"):
-            condition = self.job(name).get("if", "")
-            self.assertIn("github.event_name == 'push'", condition)
-            self.assertIn(MAIN, condition)
-
-    # -- the cross-repository token ---------------------------------------
-
-    def test_token_is_scoped_to_the_publish_job_only(self):
-        self.assertEqual(self.text.count(TOKEN_SECRET), 1,
-                         "%s must be referenced exactly once" % TOKEN_SECRET)
-        publish = self.job("publish")
-        self.assertEqual((publish.get("env") or {}).get(TOKEN_ENV),
-                         "${{ %s }}" % TOKEN_SECRET)
+    def test_no_job_uses_a_cross_repository_token(self):
         for name, job in self.jobs.items():
-            if name != "publish":
-                self.assertNotIn(TOKEN_ENV, yaml.safe_dump(job))
+            self.assertNotIn("KODI_ADDONS_TOKEN", yaml.safe_dump(job))
+            self.assertNotIn("secrets.", yaml.safe_dump(job))
 
-    def test_publish_fails_explicitly_on_an_empty_token(self):
-        guard = [step for step in steps(self.job("publish"))
-                 if "-z" in (step.get("run") or "")
-                 and TOKEN_ENV in (step.get("run") or "")]
-        self.assertEqual(len(guard), 1, "no explicit empty-token guard")
-        run = guard[0]["run"]
-        self.assertIn("exit 1", run)
-        self.assertLess(index_of(self.job("publish"), "-z"),
-                        index_of(self.job("publish"), "publish_repo.py"),
-                        "the token guard must run before publishing")
-
-    def test_no_step_puts_a_secret_on_a_command_line(self):
-        for job_id, job in self.jobs.items():
-            for step in steps(job):
-                run = step.get("run") or ""
-                self.assertNotIn("${{ secrets.", run,
-                                 "%s/%s interpolates a secret into a script"
-                                 % (job_id, step_name(step)))
-
-    def test_release_token_is_never_offered_to_the_target(self):
-        publish = yaml.safe_dump(self.job("publish"))
-        self.assertNotIn("secrets.GITHUB_TOKEN", publish)
+    def test_release_is_gated_on_a_push_to_main(self):
+        condition = self.job("release").get("if", "")
+        self.assertIn("github.event_name == 'push'", condition)
+        self.assertIn(MAIN, condition)
 
     # -- build matrix ------------------------------------------------------
 
@@ -215,67 +183,15 @@ class TestSourceWorkflow(unittest.TestCase):
         self.assertLess(assemble, verify)
         self.assertLess(verify, publish)
 
-    def test_repo_payload_is_assembled_after_the_universal_zip(self):
-        release = self.job("release")
-        universal = index_of(release, "make_universal.py")
-        repo_payload = index_of(release, "--platforms")
-        self.assertGreaterEqual(repo_payload, 0, "no --platforms step")
-        self.assertGreater(repo_payload, universal)
-
-    def test_repo_payload_merges_only_the_committed_platforms(self):
-        release = self.job("release")
-        run = next(step.get("run") or "" for step in steps(release)
-                   if "--platforms" in (step.get("run") or ""))
-        self.assertIn(",".join(REPO_PLATFORMS), run)
-        for platform in REPO_PLATFORMS:
-            self.assertIn(platform, run)
-
-    def test_release_hands_the_repo_payload_to_the_publish_job(self):
-        upload = [step for step in steps(self.job("release"))
-                  if "upload-artifact" in step.get("uses", "")]
-        self.assertEqual(len(upload), 1, "the repo payload is not handed on")
-        options = upload[0]["with"]
-        self.assertEqual(options["name"], "repo-payload")
-        self.assertEqual(options["if-no-files-found"], "error")
-
-    def test_zip_is_never_committed(self):
+    def test_no_generated_tree_is_committed(self):
         self.assertNotIn("git add", self.text)
         self.assertNotIn("git commit", self.text)
-
-    # -- publish job -------------------------------------------------------
-
-    def test_publish_generates_then_publishes(self):
-        publish = self.job("publish")
-        generate = index_of(publish, "generate_repo.py")
-        push = index_of(publish, "publish_repo.py")
-        self.assertGreaterEqual(generate, 0, "no generate_repo.py step")
-        self.assertGreaterEqual(push, 0, "no publish_repo.py step")
-        self.assertLess(generate, push)
-
-    def test_publish_consumes_the_repo_payload_artifact(self):
-        download = [step for step in steps(self.job("publish"))
-                    if "download-artifact" in step.get("uses", "")]
-        self.assertEqual(len(download), 1)
-        self.assertEqual(download[0]["with"]["name"], "repo-payload")
-        self.assertIn("needs", self.job("publish"))
-        self.assertIn("release", self.job("publish")["needs"])
-
-    def test_publish_concurrency_is_ref_independent_and_queues(self):
-        concurrency = self.job("publish").get("concurrency")
-        self.assertIsNotNone(concurrency, "publish declares no concurrency")
-        self.assertNotIn("github.ref", concurrency["group"],
-                         "a ref-keyed group lets two refs publish at once")
-        self.assertIs(concurrency["cancel-in-progress"], False)
-
-    def test_workflow_concurrency_never_cancels(self):
-        self.assertIs(self.document["concurrency"]["cancel-in-progress"], False)
 
     # -- flags actually exist ---------------------------------------------
 
     def test_every_script_flag_the_workflow_passes_exists(self):
         """A renamed option must fail here, not halfway through a release."""
-        scripts = ("make_universal.py", "release.py", "generate_repo.py",
-                   "publish_repo.py")
+        scripts = ("make_universal.py", "release.py")
         checked = set()
         for job in self.jobs.values():
             for step in steps(job):
@@ -297,33 +213,96 @@ class TestSourceWorkflow(unittest.TestCase):
             self.assertRegex(uses, PINNED_RE, "%s/%s is unpinned" % (job_id, name))
 
 
+class TestUpdateWorkflowTemplate(unittest.TestCase):
+    """The template kodi-addons copies into .github/workflows/update-repo.yml.
+
+    It lives at .github/update-repo.yml here (outside .github/workflows/ so it
+    never runs in this repository) and is copied into kodi-addons once by hand.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = read(UPDATE_WORKFLOW)
+        cls.document = load(UPDATE_WORKFLOW)
+        cls.job = cls.document["jobs"]["update"]
+
+    def test_polls_on_a_schedule_and_by_hand(self):
+        on = triggers(self.document)
+        self.assertIn("schedule", on)
+        self.assertIn("workflow_dispatch", on)
+
+    def test_runs_in_kodi_addons_with_contents_write(self):
+        self.assertEqual(self.document["permissions"], {"contents": "write"})
+
+    def test_never_cancels_midway(self):
+        self.assertIs(self.document["concurrency"]["cancel-in-progress"], False)
+
+    def test_skips_when_the_version_is_already_published(self):
+        skip_steps = [step for step in steps(self.job)
+                      if "already published" in step_name(step)]
+        self.assertEqual(len(skip_steps), 1, "no skip step")
+        checkout = index_of(self.job, "actions/checkout")
+        self.assertLess(index_of(self.job, "resolve"),
+                        checkout, "skip must come before the source clone")
+
+    def test_polls_the_source_repository_releases(self):
+        self.assertIn(SOURCE_REPO, self.text)
+        self.assertIn("gh release view", self.text)
+        self.assertNotIn("secrets.", self.text,
+                         "no cross-repository token may be needed")
+
+    def test_downloads_only_the_two_arm_platform_payloads(self):
+        run = next(step.get("run") or "" for step in steps(self.job)
+                   if "gh release download" in (step.get("run") or ""))
+        for platform in REPO_PLATFORMS:
+            self.assertIn(platform, run)
+        self.assertNotIn("linux_x64", run, "the repo payload is ARM-only")
+
+    def test_regenerates_with_the_source_scripts(self):
+        run = "\n".join(step.get("run") or "" for step in steps(self.job))
+        self.assertIn("make_universal.py", run)
+        self.assertIn("--platforms", run)
+        self.assertIn("generate_repo.py", run)
+        self.assertIn("--payload", run)
+        self.assertIn("--version", run)
+
+    def test_commits_the_generated_tree_back(self):
+        run = "\n".join(step.get("run") or "" for step in steps(self.job))
+        self.assertIn("git commit", run)
+        self.assertIn("git push", run)
+        self.assertIn("kodi-addons-release-bot", run)
+
+    def test_actions_are_pinned(self):
+        for job_id, name, uses in uses_of(self.document):
+            self.assertRegex(uses, PINNED_RE, "%s/%s is unpinned" % (job_id, name))
+
+    def test_uses_only_the_repositorys_own_token(self):
+        self.assertNotIn("secrets.", self.text)
+        self.assertNotIn("GH_TOKEN: ${{ secrets.", self.text)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", self.text)
+
+
 class TestRepositoryPublisherContract(unittest.TestCase):
-    """publish_repo.py pushes zips/ to maratdob118/kodi-addons, nothing else."""
+    """publish_repo.py still exists for manual pushes of a generated tree."""
 
     def test_targets_the_agreed_repository_and_branch(self):
         self.assertEqual(publish_repo.DEFAULT_REPOSITORY, TARGET_REPO)
         self.assertEqual(publish_repo.DEFAULT_BRANCH, "main")
 
-    def test_token_env_is_the_documented_one(self):
-        self.assertEqual(publish_repo.DEFAULT_TOKEN_ENV, TOKEN_ENV)
-
     def test_payload_and_repository_ids_are_agreed(self):
         self.assertEqual(publish_repo.PAYLOAD, PAYLOAD)
-        self.assertEqual(publish_repo.REPOSITORY, "repository.maratdob118")
+        self.assertEqual(publish_repo.REPOSITORY, REPOSITORY)
 
     def test_the_committed_zips_index_markers_are_managed(self):
         self.assertTrue(publish_repo.ADDONS_XML.startswith("zips/"))
         self.assertTrue(publish_repo.ADDONS_XML_MD5.startswith("zips/"))
 
     def test_publisher_manages_no_workflow_and_no_script(self):
-        """The target's .github/ is the target's own; a token with Contents:write
-        cannot write workflows anyway."""
         source = read(os.path.join(SCRIPTS, "publish_repo.py"))
         self.assertNotIn(".github/workflows", source)
         self.assertNotIn("workflow", source.replace("workflow_dispatch", ""))
 
     def test_publisher_preserves_every_unknown_target_file(self):
-        """Only generated paths are written, staged and diffed; nothing is pruned."""
         source = read(os.path.join(SCRIPTS, "publish_repo.py"))
         self.assertIn("for relative, content in self.files.items()", source)
         self.assertNotIn("rmtree(self.dest", source)
