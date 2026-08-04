@@ -146,13 +146,9 @@ def _action_add(handle):
     kb = xbmcgui.Dialog().input(
         _ls(32201), type=xbmcgui.INPUT_ALPHANUM)
     if kb:
-        store = _store()
-        p, err = store.add_uri(kb)
-        if err:
-            _notify(_ls(32214), error=True)
-        else:
-            _notify(_ls(32213) % p["tag"])
-    _finish_action(handle)
+        _action_sub_add(handle, kb)
+    else:
+        _finish_action(handle)
 
 
 def _action_test(handle):
@@ -251,6 +247,13 @@ def _subscription_store():
 
 def _action_sub_add(handle, url):
     """Add a pasted link: a profile when it parses, else a subscription URL."""
+    if not url:
+        url = (xbmcaddon.Addon(ADDON_ID).getSetting("subscription_url")
+               or "").strip()
+        if not url:
+            _notify(_ls(32214), error=True)
+            _finish_action(handle)
+            return
     store = _store()
     if parsers.parse_uri(url) is not None:
         p, err = store.add_uri(url)
