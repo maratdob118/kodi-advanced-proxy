@@ -810,23 +810,60 @@ class TestBuildXray(unittest.TestCase):
         self.assertFalse(any(r.get("protocol") == ["bittorrent"]
                              for r in cfg["routing"]["rules"]))
 
-    def test_geoip_rule_when_url_set(self):
+    def test_geoip_rule_when_url_set_and_db_exists(self):
         profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_xray.build_config(
-            profs, self._settings(geoip_url="https://a/geoip.dat"))
-        geo = [r for r in cfg["routing"]["rules"]
-               if r.get("ip") == ["geoip:ru-blocked"]]
-        self.assertEqual(len(geo), 1)
-        self.assertEqual(geo[0]["outboundTag"], "direct")
+        with tempfile.TemporaryDirectory() as td:
+            geo = os.path.join(td, "geoip.dat")
+            with open(geo, "w") as f:
+                f.write("x")
+            cfg, _ = build_xray.build_config(
+                profs, self._settings(
+                    geoip_url="https://a/geoip.dat",
+                    geo_paths={"geoip": geo, "geosite": os.path.join(td, "geosite.dat")}))
+            geo_rules = [r for r in cfg["routing"]["rules"]
+                         if r.get("ip") == ["geoip:ru-blocked"]]
+            self.assertEqual(len(geo_rules), 1)
+            self.assertEqual(geo_rules[0]["outboundTag"], "direct")
 
-    def test_geosite_rule_when_url_set(self):
+    def test_geoip_rule_absent_when_db_missing(self):
+        # A rule referencing a missing geoip.dat makes Xray refuse the whole
+        # config; the rule must not be emitted until the DB is downloaded.
         profs, _ = parsers.parse_lines([VLESS])
-        cfg, _ = build_xray.build_config(
-            profs, self._settings(geosite_url="https://b/geosite.dat"))
-        geo = [r for r in cfg["routing"]["rules"]
-               if r.get("domain") == ["geosite:ru-blocked"]]
-        self.assertEqual(len(geo), 1)
-        self.assertEqual(geo[0]["outboundTag"], "direct")
+        with tempfile.TemporaryDirectory() as td:
+            cfg, _ = build_xray.build_config(
+                profs, self._settings(
+                    geoip_url="https://a/geoip.dat",
+                    geo_paths={"geoip": os.path.join(td, "geoip.dat"),
+                               "geosite": os.path.join(td, "geosite.dat")}))
+        self.assertFalse(any(r.get("ip") == ["geoip:ru-blocked"]
+                             for r in cfg["routing"]["rules"]))
+
+    def test_geosite_rule_when_url_set_and_db_exists(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        with tempfile.TemporaryDirectory() as td:
+            geo = os.path.join(td, "geosite.dat")
+            with open(geo, "w") as f:
+                f.write("x")
+            cfg, _ = build_xray.build_config(
+                profs, self._settings(
+                    geosite_url="https://b/geosite.dat",
+                    geo_paths={"geoip": os.path.join(td, "geoip.dat"),
+                               "geosite": geo}))
+            geo_rules = [r for r in cfg["routing"]["rules"]
+                         if r.get("domain") == ["geosite:ru-blocked"]]
+            self.assertEqual(len(geo_rules), 1)
+            self.assertEqual(geo_rules[0]["outboundTag"], "direct")
+
+    def test_geosite_rule_absent_when_db_missing(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        with tempfile.TemporaryDirectory() as td:
+            cfg, _ = build_xray.build_config(
+                profs, self._settings(
+                    geosite_url="https://b/geosite.dat",
+                    geo_paths={"geoip": os.path.join(td, "geoip.dat"),
+                               "geosite": os.path.join(td, "geosite.dat")}))
+        self.assertFalse(any(r.get("domain") == ["geosite:ru-blocked"]
+                             for r in cfg["routing"]["rules"]))
 
     def test_geo_rules_absent_by_default(self):
         profs, _ = parsers.parse_lines([VLESS])
@@ -835,6 +872,17 @@ class TestBuildXray(unittest.TestCase):
                              for r in cfg["routing"]["rules"]))
         self.assertFalse(any(r.get("domain") == ["geosite:ru-blocked"]
                              for r in cfg["routing"]["rules"]))
+
+    def test_supervisor_geo_paths_injected_into_build_settings(self):
+        with tempfile.TemporaryDirectory() as work:
+            sup = supervisor.ProxySupervisor(
+                settings={"local_port": 1080}, addon_dir=work, work_dir=work)
+            sup.effective_port = 1080
+            s = sup._build_settings()
+            self.assertEqual(s["geo_paths"]["geoip"],
+                             os.path.join(work, "geoip.dat"))
+            self.assertEqual(s["geo_paths"]["geosite"],
+                             os.path.join(work, "geosite.dat"))
 
 
 class TestHelpers(unittest.TestCase):
@@ -1069,6 +1117,24 @@ class TestBinaryManager(unittest.TestCase):
                 self.assertTrue(
                     os.path.exists(os.path.join(bm.work_dir_bin, name)),
                     "%s must be copied next to the engine" % name)
+
+    def test_xray_downloaded_geo_db_overrides_bundled(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bin_dir = os.path.join(addon, "resources", "bin", "linux_x64")
+            os.makedirs(bin_dir)
+            with open(os.path.join(bin_dir, "xray"), "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(os.path.join(bin_dir, "xray"), 0o755)
+            with open(os.path.join(bin_dir, "geoip.dat"), "w") as f:
+                f.write("bundled")
+            with open(os.path.join(work, "geoip.dat"), "w") as f:
+                f.write("downloaded-with-ru-blocked")
+            bm = binary_manager.BinaryManager(
+                addon, work, engine="xray", platform_override="linux_x64")
+            bm.ensure_binary()
+            with open(os.path.join(bm.work_dir_bin, "geoip.dat")) as f:
+                self.assertEqual(f.read(), "downloaded-with-ru-blocked",
+                                 "downloaded DB must win over bundled")
 
     def test_singbox_does_not_require_geo_files(self):
         with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:

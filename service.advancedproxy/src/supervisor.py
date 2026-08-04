@@ -83,6 +83,8 @@ class ProxySupervisor(object):
         s = dict(self.settings)
         if self.effective_port:
             s["local_port"] = self.effective_port
+        s["geo_paths"] = {"geoip": os.path.join(self.work_dir, "geoip.dat"),
+                          "geosite": os.path.join(self.work_dir, "geosite.dat")}
         return s
 
     def build_and_write_config(self):
