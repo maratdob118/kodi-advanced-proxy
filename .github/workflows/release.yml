@@ -157,13 +157,22 @@ jobs:
             --assets-dir artifacts \
             --sha "$GITHUB_SHA"
 
-      # Handed to the publish job so the manifest's digest is measured on the
-      # very bytes that were just released. Never committed to Git.
-      - name: Upload the universal ZIP for the publish job
+      # The repository serves one ZIP per addon version from raw.githubusercontent.com; it must stay under GitHub's 100 MB blob limit, so only the two ARM platforms are merged. Never committed to Git.
+      - name: Assemble the repository payload ZIP
+        env:
+          ADDON_VERSION: ${{ steps.version.outputs.addon_version }}
+        run: |
+          python3 scripts/make_universal.py \
+            --dist artifacts \
+            --version "$ADDON_VERSION" \
+            --platforms linux_arm64,linux_armv7 \
+            --output "artifacts/repo-payload-$ADDON_VERSION.zip"
+
+      - name: Upload the repository payload for the publish job
         uses: actions/upload-artifact@v5
         with:
-          name: universal-zip
-          path: artifacts/service.advancedproxy-${{ steps.version.outputs.addon_version }}.zip
+          name: repo-payload
+          path: artifacts/repo-payload-${{ steps.version.outputs.addon_version }}.zip
           if-no-files-found: error
           retention-days: 1
 
@@ -209,10 +218,10 @@ jobs:
         id: version
         run: echo "addon_version=$(./build.sh --print-version)" >> "$GITHUB_OUTPUT"
 
-      - name: Download the universal ZIP
+      - name: Download the repository payload
         uses: actions/download-artifact@v5
         with:
-          name: universal-zip
+          name: repo-payload
           path: artifacts
 
       - name: Generate the target repository tree
@@ -222,7 +231,7 @@ jobs:
           python3 scripts/generate_repo.py \
             --repo . \
             --out generated \
-            --universal "artifacts/service.advancedproxy-$ADDON_VERSION.zip" \
+            --payload "artifacts/repo-payload-$ADDON_VERSION.zip" \
             --version "$ADDON_VERSION"
 
       - name: Publish the tree to maratdob118/kodi-addons

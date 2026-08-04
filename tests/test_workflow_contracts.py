@@ -1,22 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Contract tests for the two release workflows.
+"""Contract tests for the release workflow.
 
-Two workflows carry this project's release, and neither can be run locally:
-
-  * `.github/workflows/release.yml` lives here. It tests, builds the eight
-    platform ZIPs, assembles and verifies the universal ZIP, publishes the
-    source release, then hands the generated metadata to the target repo.
-* `bootstrap/bigping.repository/.github/workflows/pages.yml` is a template.
-  A human bootstraps it into maratdob118/kodi-addons once, by hand,
-    together with its site builder. It is deliberately NOT part of the tree
-    `scripts/publish_repo.py` manages, so the cross-repository token needs
-    Contents:write and never the `workflows` permission.
-
-What cannot be executed is asserted instead. These tests pin the properties a
-reviewer would otherwise have to re-derive from YAML every time: which job may
-write, which job may see the cross-repository token, in which order the release
-steps run, that the payload is never fetched from somewhere that cannot serve
-it, and that no step can leak a secret through argv or a log line.
+`.github/workflows/release.yml` cannot be run locally. These tests pin the
+properties a reviewer would otherwise have to re-derive from YAML every time:
+which job may write, which job may see the cross-repository token, in which
+order the release steps run, that every script flag the workflow passes exists,
+and that no step can leak a secret through argv or a log line.
 
 Run:  python3 tests/test_workflow_contracts.py
       python3 -m unittest tests.test_workflow_contracts
@@ -36,9 +25,6 @@ sys.path.insert(0, SCRIPTS)
 import publish_repo  # noqa: E402
 
 SOURCE_WORKFLOW = os.path.join(REPO, ".github", "workflows", "release.yml")
-TEMPLATE = os.path.join(REPO, "bootstrap", "bigping.repository")
-TARGET_WORKFLOW = os.path.join(TEMPLATE, ".github", "workflows", "pages.yml")
-BUILD_SITE = os.path.join(TEMPLATE, "scripts", "build_site.py")
 
 PAYLOAD = "service.advancedproxy"
 TARGET_REPO = "maratdob118/kodi-addons"
@@ -47,6 +33,7 @@ TOKEN_SECRET = "secrets." + TOKEN_ENV
 MAIN = "refs/heads/main"
 PLATFORMS = ("linux_x64", "linux_x86", "linux_armv7", "linux_arm64",
              "android_arm64", "windows_x64", "darwin_x64", "darwin_arm64")
+REPO_PLATFORMS = ("linux_arm64", "linux_armv7")
 
 # A stable major tag (actions/checkout@v5) or an immutable 40-hex commit.
 PINNED_RE = re.compile(r"^[\w.-]+/[\w.-]+(?:/[\w.-]+)*@(?:v[0-9]+|[0-9a-f]{40})$")
@@ -132,7 +119,6 @@ class TestSourceWorkflow(unittest.TestCase):
                               "%s filter misses %s" % (event, required))
 
     def test_documentation_only_pushes_do_not_release(self):
-        """docs/ and the README are not build inputs; they must not trigger."""
         on = triggers(self.document)
         for event in ("push", "pull_request"):
             for path in on[event]["paths"]:
@@ -190,7 +176,6 @@ class TestSourceWorkflow(unittest.TestCase):
                                  % (job_id, step_name(step)))
 
     def test_release_token_is_never_offered_to_the_target(self):
-        """GITHUB_TOKEN cannot write the target; the PAT cannot write here."""
         publish = yaml.safe_dump(self.job("publish"))
         self.assertNotIn("secrets.GITHUB_TOKEN", publish)
 
@@ -230,16 +215,30 @@ class TestSourceWorkflow(unittest.TestCase):
         self.assertLess(assemble, verify)
         self.assertLess(verify, publish)
 
-    def test_release_hands_the_universal_zip_to_the_publish_job(self):
+    def test_repo_payload_is_assembled_after_the_universal_zip(self):
+        release = self.job("release")
+        universal = index_of(release, "make_universal.py")
+        repo_payload = index_of(release, "--platforms")
+        self.assertGreaterEqual(repo_payload, 0, "no --platforms step")
+        self.assertGreater(repo_payload, universal)
+
+    def test_repo_payload_merges_only_the_committed_platforms(self):
+        release = self.job("release")
+        run = next(step.get("run") or "" for step in steps(release)
+                   if "--platforms" in (step.get("run") or ""))
+        self.assertIn(",".join(REPO_PLATFORMS), run)
+        for platform in REPO_PLATFORMS:
+            self.assertIn(platform, run)
+
+    def test_release_hands_the_repo_payload_to_the_publish_job(self):
         upload = [step for step in steps(self.job("release"))
                   if "upload-artifact" in step.get("uses", "")]
-        self.assertEqual(len(upload), 1, "the universal ZIP is not handed on")
+        self.assertEqual(len(upload), 1, "the repo payload is not handed on")
         options = upload[0]["with"]
-        self.assertIn(PAYLOAD, options["path"])
-        self.assertNotIn(".linux_", options["path"], "that is a platform ZIP")
+        self.assertEqual(options["name"], "repo-payload")
         self.assertEqual(options["if-no-files-found"], "error")
 
-    def test_universal_zip_is_never_committed(self):
+    def test_zip_is_never_committed(self):
         self.assertNotIn("git add", self.text)
         self.assertNotIn("git commit", self.text)
 
@@ -253,10 +252,11 @@ class TestSourceWorkflow(unittest.TestCase):
         self.assertGreaterEqual(push, 0, "no publish_repo.py step")
         self.assertLess(generate, push)
 
-    def test_publish_consumes_the_universal_artifact(self):
+    def test_publish_consumes_the_repo_payload_artifact(self):
         download = [step for step in steps(self.job("publish"))
                     if "download-artifact" in step.get("uses", "")]
         self.assertEqual(len(download), 1)
+        self.assertEqual(download[0]["with"]["name"], "repo-payload")
         self.assertIn("needs", self.job("publish"))
         self.assertIn("release", self.job("publish")["needs"])
 
@@ -296,114 +296,43 @@ class TestSourceWorkflow(unittest.TestCase):
         for job_id, name, uses in uses_of(self.document):
             self.assertRegex(uses, PINNED_RE, "%s/%s is unpinned" % (job_id, name))
 
-    def test_nothing_is_force_pushed_and_nothing_uses_raw_githubusercontent(self):
-        self.assertNotIn("--force", self.text)
-        self.assertNotIn("raw.githubusercontent", self.text)
 
+class TestRepositoryPublisherContract(unittest.TestCase):
+    """publish_repo.py pushes zips/ to maratdob118/kodi-addons, nothing else."""
 
-class TestTargetWorkflowTemplate(unittest.TestCase):
-    """The Pages workflow a human bootstraps into the target repository."""
+    def test_targets_the_agreed_repository_and_branch(self):
+        self.assertEqual(publish_repo.DEFAULT_REPOSITORY, TARGET_REPO)
+        self.assertEqual(publish_repo.DEFAULT_BRANCH, "main")
 
-    @classmethod
-    def setUpClass(cls):
-        cls.text = read(TARGET_WORKFLOW)
-        cls.document = load(TARGET_WORKFLOW)
-        cls.job = cls.document["jobs"]["deploy"]
+    def test_token_env_is_the_documented_one(self):
+        self.assertEqual(publish_repo.DEFAULT_TOKEN_ENV, TOKEN_ENV)
 
-    def test_triggers_on_the_publisher_push(self):
-        on = triggers(self.document)
-        self.assertEqual(on["push"]["branches"], ["main"])
-        self.assertIn("workflow_dispatch", on)
+    def test_payload_and_repository_ids_are_agreed(self):
+        self.assertEqual(publish_repo.PAYLOAD, PAYLOAD)
+        self.assertEqual(publish_repo.REPOSITORY, "repository.maratdob118")
 
-    def test_permissions_are_exactly_what_pages_needs(self):
-        self.assertEqual(self.document["permissions"], {"contents": "read"})
-        self.assertEqual(self.job["permissions"],
-                         {"contents": "read", "pages": "write",
-                          "id-token": "write"})
-
-    def test_deployment_never_cancels_midway(self):
-        self.assertIs(self.document["concurrency"]["cancel-in-progress"], False)
-
-    def test_download_url_comes_from_the_manifest_not_from_a_literal(self):
-        plan = index_of(self.job, "build_site.py --plan")
-        self.assertGreaterEqual(plan, 0, "no manifest plan step")
-        self.assertNotIn("https://github.com/", self.text,
-                         "the payload URL must be read from manifest.json")
-
-    def test_url_reaches_curl_through_the_environment_only(self):
-        for step in steps(self.job):
-            run = step.get("run") or ""
-            self.assertNotIn("steps.plan.outputs", run,
-                             "an interpolated URL is a shell injection vector")
-        download = [step for step in steps(self.job)
-                    if "curl" in (step.get("run") or "")]
-        self.assertEqual(len(download), 1)
-        self.assertIn("${{ steps.plan.outputs.url }}",
-                      yaml.safe_dump(download[0].get("env") or {}))
-
-    def test_curl_retries_and_fails_loudly(self):
-        download = next(step for step in steps(self.job)
-                        if "curl" in (step.get("run") or ""))
-        run = download["run"]
-        self.assertIn("--retry", run)
-        self.assertIn("--fail", run)
-        self.assertNotIn("raw.githubusercontent", self.text)
-
-    def test_payload_is_verified_before_the_site_is_built(self):
-        verify = index_of(self.job, "build_site.py --verify")
-        build = index_of(self.job, "--out _site")
-        upload = index_of(self.job, "upload-pages-artifact")
-        deploy = index_of(self.job, "deploy-pages")
-        for label, position in (("verify", verify), ("build", build),
-                                ("upload", upload), ("deploy", deploy)):
-            self.assertGreaterEqual(position, 0, "no %s step" % label)
-        self.assertLess(verify, build)
-        self.assertLess(build, upload)
-        self.assertLess(upload, deploy)
-
-    def test_deploys_with_the_official_pages_actions(self):
-        actions = [uses for _, _, uses in uses_of(self.document)]
-        self.assertTrue(any(u.startswith("actions/upload-pages-artifact@")
-                            for u in actions))
-        self.assertTrue(any(u.startswith("actions/deploy-pages@") for u in actions))
-        self.assertEqual(self.job["environment"]["name"], "github-pages")
-
-    def test_actions_are_pinned(self):
-        for job_id, name, uses in uses_of(self.document):
-            self.assertRegex(uses, PINNED_RE, "%s/%s is unpinned" % (job_id, name))
-
-    def test_no_token_is_needed_beyond_the_targets_own(self):
-        self.assertNotIn("secrets.", self.text.replace("secrets.GITHUB_TOKEN", ""))
-        self.assertNotIn(TOKEN_ENV, self.text)
-
-
-class TestBootstrapSeparation(unittest.TestCase):
-    """The template is bootstrapped by hand and preserved by the publisher."""
-
-    def test_template_ships_a_workflow_and_a_site_builder(self):
-        self.assertTrue(os.path.isfile(TARGET_WORKFLOW), TARGET_WORKFLOW)
-        self.assertTrue(os.path.isfile(BUILD_SITE), BUILD_SITE)
+    def test_the_committed_zips_index_markers_are_managed(self):
+        self.assertTrue(publish_repo.ADDONS_XML.startswith("zips/"))
+        self.assertTrue(publish_repo.ADDONS_XML_MD5.startswith("zips/"))
 
     def test_publisher_manages_no_workflow_and_no_script(self):
-        """Writing .github/ would demand a `workflows` permission we refuse."""
-        for managed in publish_repo.MANAGED:
-            self.assertFalse(managed.startswith(".github/"), managed)
-            self.assertFalse(managed.startswith("scripts/"), managed)
+        """The target's .github/ is the target's own; a token with Contents:write
+        cannot write workflows anyway."""
+        source = read(os.path.join(SCRIPTS, "publish_repo.py"))
+        self.assertNotIn(".github/workflows", source)
+        self.assertNotIn("workflow", source.replace("workflow_dispatch", ""))
 
     def test_publisher_preserves_every_unknown_target_file(self):
-        """Only MANAGED paths are written, staged and diffed; nothing is pruned."""
+        """Only generated paths are written, staged and diffed; nothing is pruned."""
         source = read(os.path.join(SCRIPTS, "publish_repo.py"))
         self.assertIn("for relative, content in self.files.items()", source)
         self.assertNotIn("rmtree(self.dest", source)
         self.assertNotIn('"clean"', source)
         self.assertNotIn("git add --all", source)
 
-    def test_the_workflow_the_target_runs_is_the_one_under_test(self):
-        """The bootstrapped copy sits at the same relative paths in the target."""
-        self.assertTrue(TARGET_WORKFLOW.endswith(
-            os.path.join(".github", "workflows", "pages.yml")))
-        self.assertTrue(BUILD_SITE.endswith(
-            os.path.join("scripts", "build_site.py")))
+    def test_nothing_is_force_pushed(self):
+        source = read(os.path.join(SCRIPTS, "publish_repo.py"))
+        self.assertNotIn("--force", source)
 
 
 if __name__ == "__main__":

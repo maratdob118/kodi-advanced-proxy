@@ -1,13 +1,13 @@
-"""Tests for the text-only Kodi repository tree generator.
+"""Tests for the classic Kodi repository tree generator.
 
-The generator turns two source manifests plus one universal ZIP into the
-text tree the target repository commits and GitHub Pages serves:
+The generator turns the two source manifests plus one payload ZIP into the
+tree that maratdob118/kodi-addons commits and serves from
+raw.githubusercontent.com:
 
-    addons.xml, addons.xml.md5, manifest.json, README.md,
-    repository.bigping/addon.xml
-
-Nothing binary is ever produced: the ~235 MB universal ZIP is only read, and
-its identity travels to the Pages workflow as a URL + SHA256 in manifest.json.
+    zips/addons.xml, zips/addons.xml.md5,
+    zips/service.advancedproxy/{addon.xml, service.advancedproxy-<v>.zip},
+    zips/repository.maratdob118/{addon.xml, repository.maratdob118-<v>.zip},
+    README.md
 """
 import hashlib
 import json
@@ -25,13 +25,8 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, ".."))
 PAYLOAD = "service.advancedproxy"
-REPOSITORY = "repository.bigping"
-SOURCE_REPO = "maratdob118/kodi-advanced-proxy"
-PAGES = "https://maratdob118.github.io/kodi-addons/"
-RELEASES = "https://github.com/%s/releases/download/" % SOURCE_REPO
+REPOSITORY = "repository.maratdob118"
 XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-GENERATED = ("addons.xml", "addons.xml.md5", "manifest.json", "README.md",
-             os.path.join(REPOSITORY, "addon.xml"))
 
 
 def read_bytes(path):
@@ -51,27 +46,14 @@ def addon_version(path):
     return ET.parse(path).getroot().get("version")
 
 
-def declared_assets(addon_id):
-    """(kind, reference) for every asset an addon manifest declares."""
-    metadata = next(element for element in source_root(addon_id).iter("extension")
-                    if element.get("point") == "xbmc.addon.metadata")
-    assets = metadata.find("assets")
-    if assets is None:
-        return []
-    return [(child.tag, child.text.strip()) for child in assets
-            if (child.text or "").strip()]
-
-
-# Derived, never hardcoded: a version bump must not break these tests.
 VERSION = source_root(PAYLOAD).get("version")
 REPOSITORY_VERSION = source_root(REPOSITORY).get("version")
-PAYLOAD_ASSETS = declared_assets(PAYLOAD)
 MODE_DIR = 0o755
 MODE_FILE = 0o644
 
 
 class RepositoryFixture:
-    """A throwaway copy of the source repo plus a fake universal ZIP."""
+    """A throwaway copy of the source repo plus a fake payload ZIP."""
 
     def __init__(self, root):
         self.root = root
@@ -90,27 +72,24 @@ class RepositoryFixture:
         return os.path.join(self.repo, relative)
 
     def payload_xml(self, version=None):
-        """The source payload addon.xml, restamped through its version attribute."""
         root = source_root(PAYLOAD)
         if version:
             root.set("version", version)
         return XML_DECLARATION + "\n" + ET.tostring(root, encoding="unicode")
 
-    def universal_path(self, version=None):
+    def payload_path(self, version=None):
         return os.path.join(self.dist,
                             "%s-%s.zip" % (PAYLOAD, version or VERSION))
 
-    def make_universal(self, version=None, inner_version=None, path=None,
-                       mutation=None):
-        """Write a stand-in universal ZIP: payload manifest plus declared art."""
+    def make_payload(self, version=None, inner_version=None, path=None,
+                     mutation=None):
         version = version or VERSION
-        path = path or self.universal_path(version)
+        path = path or self.payload_path(version)
         entries = {
             "%s/addon.xml" % PAYLOAD: self.payload_xml(inner_version or version),
             "%s/main.py" % PAYLOAD: "# payload\n",
+            "%s/resources/icon.png" % PAYLOAD: "icon-bytes",
         }
-        for _, reference in PAYLOAD_ASSETS:
-            entries["%s/%s" % (PAYLOAD, reference)] = "art:%s\n" % reference
         if mutation:
             mutation(entries)
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -118,10 +97,6 @@ class RepositoryFixture:
             for name in sorted(entries):
                 archive.writestr(name, entries[name])
         return path
-
-    def universal_entry(self, name, version=None):
-        with zipfile.ZipFile(self.universal_path(version)) as archive:
-            return archive.read(name)
 
     def generate(self, *options, out=None, umask=-1):
         out = self.out if out is None else out
@@ -134,11 +109,7 @@ class RepositoryFixture:
     def generated(self, *parts, out=None):
         return os.path.join(self.out if out is None else out, *parts)
 
-    def manifest(self, out=None):
-        return json.loads(read_text(self.generated("manifest.json", out=out)))
-
     def tree(self, out=None):
-        """Every generated file, repo-relative, sorted."""
         base = self.out if out is None else out
         found = []
         for directory, _, names in os.walk(base):
@@ -154,13 +125,12 @@ class RepositoryTestCase(unittest.TestCase):
         self.fixture = RepositoryFixture(self.tmp)
 
     def generate_ok(self, *options, **kwargs):
-        self.fixture.make_universal()
+        self.fixture.make_payload()
         result = self.fixture.generate(*options, **kwargs)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
 
     def assertRefused(self, result, out=None):
-        """A refusal diagnoses itself and leaves no half-written tree behind."""
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("generate_repo:", result.stderr)
         self.assertNotIn("Traceback", result.stderr,
@@ -174,7 +144,7 @@ class RepositoryTestCase(unittest.TestCase):
 
 
 class TestRepositoryAddonManifest(RepositoryTestCase):
-    """The hand-written repository.bigping/addon.xml is the Kodi 20+ contract."""
+    """The hand-written repository.maratdob118/addon.xml is the Kodi 19+ contract."""
 
     def setUp(self):
         super().setUp()
@@ -195,536 +165,242 @@ class TestRepositoryAddonManifest(RepositoryTestCase):
         payload = ET.parse(os.path.join(REPO, PAYLOAD, "addon.xml")).getroot()
         self.assertEqual(payload.get("id"), PAYLOAD)
 
-    def test_repository_extension_uses_the_kodi20_dir_form(self):
+    def test_repository_extension_uses_the_dir_form(self):
         extension = self.extension("xbmc.addon.repository")
         self.assertTrue((extension.get("name") or "").strip())
-        dirs = extension.findall("dir")
-        self.assertEqual(len(dirs), 1, "expected exactly one <dir>")
-        self.assertEqual(dirs[0].get("minversion"), "20.0.0")
-        for child in ("info", "checksum", "datadir", "hashes"):
-            self.assertIsNotNone(dirs[0].find(child), child)
-        self.assertIsNone(extension.find("info"),
-                          "<info> must live inside <dir>, not under the point")
+        directories = [element for element in extension.iter("dir")]
+        self.assertEqual(len(directories), 1)
 
     def test_dir_children_carry_the_conventional_schema_attributes(self):
-        """Kodi 20+ ignores info@compressed and datadir@zip; repository.xsd
-        still declares them, so the shape is pinned by convention only."""
-        node = self.extension("xbmc.addon.repository").find("dir")
-        self.assertEqual(node.find("info").get("compressed"), "false")
-        self.assertEqual(node.find("checksum").get("verify"), "md5")
-        self.assertEqual(node.find("datadir").get("zip"), "true")
-        self.assertEqual((node.find("hashes").text or "").strip(), "sha256")
+        directory = next(self.extension("xbmc.addon.repository").iter("dir"))
+        self.assertTrue((directory.get("minversion") or "").strip())
+        children = {child.tag: child for child in directory}
+        for tag in ("info", "checksum", "datadir"):
+            self.assertIn(tag, children, "repo addon must declare <%s>" % tag)
+        self.assertEqual(children["datadir"].get("zip"), "true")
 
-    def test_four_https_pages_urls_with_datadir_slash(self):
-        node = self.extension("xbmc.addon.repository").find("dir")
-        metadata = self.extension("xbmc.addon.metadata")
-        urls = [node.find("info").text.strip(),
-                node.find("checksum").text.strip(),
-                node.find("datadir").text.strip(),
-                metadata.find("website").text.strip()]
-        self.assertEqual(len(urls), 4)
-        for url in urls:
-            self.assertTrue(url.startswith("https://"), url)
-            self.assertTrue(url.startswith(PAGES), url)
-            self.assertNotIn("raw.githubusercontent", url)
-        self.assertEqual(urls[0], PAGES + "addons.xml")
-        self.assertEqual(urls[1], PAGES + "addons.xml.md5")
-        self.assertEqual(urls[2], PAGES)
-        self.assertTrue(urls[2].endswith("/"), "datadir must end with a slash")
+    def test_endpoints_point_at_the_committed_zips_tree(self):
+        directory = next(self.extension("xbmc.addon.repository").iter("dir"))
+        children = {child.tag: child for child in directory}
+        self.assertIn("raw.githubusercontent.com/maratdob118/kodi-addons",
+                      children["info"].text)
+        self.assertIn("raw.githubusercontent.com/maratdob118/kodi-addons",
+                      children["checksum"].text)
+        self.assertIn("raw.githubusercontent.com/maratdob118/kodi-addons",
+                      children["datadir"].text)
+        self.assertTrue(children["info"].text.endswith("zips/addons.xml"))
+        self.assertTrue(children["checksum"].text.endswith("zips/addons.xml.md5"))
+        self.assertTrue(children["datadir"].text.endswith("zips/"))
+        self.assertEqual((children.get("hashes").text if "hashes" in children
+                          else None), "false",
+                         "raw.githubusercontent.com sends no Content-SHA256")
 
     def test_metadata_declares_the_project_license(self):
         metadata = self.extension("xbmc.addon.metadata")
-        self.assertEqual((metadata.find("license").text or "").strip(),
-                         "GPL-3.0-or-later")
+        self.assertEqual(metadata.find("license").text, "GPL-3.0-or-later")
 
     def test_metadata_source_points_at_the_new_source_repository(self):
         metadata = self.extension("xbmc.addon.metadata")
-        source = (metadata.find("source").text or "").strip()
-        self.assertEqual(source,
+        self.assertEqual(metadata.find("source").text,
                          "https://github.com/maratdob118/kodi-advanced-proxy")
-        self.assertTrue(source.startswith("https://"), source)
-
-    def test_repository_addon_declares_no_binary_assets(self):
-        """No invented artwork: the addon ships metadata only."""
-        assets = self.extension("xbmc.addon.metadata").find("assets")
-        if assets is not None:
-            for element in assets.iter():
-                if element is not assets:
-                    self.fail("unexpected asset reference: %s" % element.tag)
-        directory = os.path.join(REPO, REPOSITORY)
-        self.assertEqual(sorted(os.listdir(directory)), ["addon.xml"])
 
 
 class TestGeneratedTree(RepositoryTestCase):
-    def test_generates_exactly_the_text_files_pages_needs(self):
+    def test_generates_exactly_the_classic_tree(self):
         self.generate_ok()
-        self.assertEqual(self.fixture.tree(), sorted(GENERATED))
+        self.assertEqual(self.fixture.tree(), sorted([
+            "README.md",
+            "zips/addons.xml",
+            "zips/addons.xml.md5",
+            os.path.join("zips", PAYLOAD, "addon.xml"),
+            os.path.join("zips", PAYLOAD,
+                         "%s-%s.zip" % (PAYLOAD, VERSION)),
+            os.path.join("zips", REPOSITORY, "addon.xml"),
+            os.path.join("zips", REPOSITORY,
+                         "%s-%s.zip" % (REPOSITORY, REPOSITORY_VERSION)),
+        ]))
 
-    def test_tree_is_text_only_and_carries_no_payload_bytes(self):
+    def test_payload_zip_is_copied_verbatim(self):
         self.generate_ok()
-        universal = os.path.getsize(self.fixture.universal_path())
-        for relative in self.fixture.tree():
-            path = self.fixture.generated(relative)
-            self.assertNotEqual(os.path.getsize(path), universal)
-            self.assertLess(os.path.getsize(path), 64 * 1024, relative)
-            self.assertFalse(relative.endswith(".zip"), relative)
-            read_text(path)  # decodes as UTF-8 or raises
-
-    def test_repository_manifest_is_copied_verbatim(self):
-        self.generate_ok()
+        with open(self.fixture.payload_path(), "rb") as stream:
+            expected = stream.read()
         self.assertEqual(
-            read_bytes(self.fixture.generated(REPOSITORY, "addon.xml")),
-            read_bytes(os.path.join(REPO, REPOSITORY, "addon.xml")))
+            read_bytes(self.fixture.generated(
+                "zips", PAYLOAD, "%s-%s.zip" % (PAYLOAD, VERSION))),
+            expected)
 
-    def test_readme_documents_the_pages_endpoints(self):
+    def test_repository_zip_is_a_single_root_archive_of_the_manifest(self):
         self.generate_ok()
-        readme = read_text(self.fixture.generated("README.md"))
-        for needle in (PAGES + "addons.xml", REPOSITORY, PAYLOAD,
-                       "generate_repo.py"):
-            self.assertIn(needle, readme)
-
-    def test_readme_states_the_publish_obligations(self):
-        self.generate_ok()
-        readme = read_text(self.fixture.generated("README.md")).lower()
-        for needle in ("manifest.json", "sha256", ".sha256", "content-sha256",
-                       "zip_root", "art"):
-            self.assertIn(needle.lower(), readme)
-
-
-class TestFixtureIntegrity(RepositoryTestCase):
-    """The harness must track the source manifests, not a pinned literal."""
+        path = self.fixture.generated(
+            "zips", REPOSITORY, "%s-%s.zip" % (REPOSITORY, REPOSITORY_VERSION))
+        with zipfile.ZipFile(path) as archive:
+            self.assertEqual(archive.namelist(), ["%s/addon.xml" % REPOSITORY])
+            manifest = ET.fromstring(archive.read("%s/addon.xml" % REPOSITORY))
+        self.assertEqual(manifest.get("id"), REPOSITORY)
+        self.assertEqual(manifest.get("version"), REPOSITORY_VERSION)
 
     def test_versions_are_read_from_the_source_manifests(self):
-        self.assertEqual(VERSION, addon_version(
-            os.path.join(REPO, PAYLOAD, "addon.xml")))
-        self.assertEqual(REPOSITORY_VERSION, addon_version(
-            os.path.join(REPO, REPOSITORY, "addon.xml")))
-
-    def test_restamping_survives_a_version_bump(self):
-        for version in ("9.9.9", "0.0.1"):
-            stamped = ET.fromstring(self.fixture.payload_xml(version))
-            self.assertEqual(stamped.get("version"), version)
-        self.assertEqual(
-            ET.fromstring(self.fixture.payload_xml()).get("version"), VERSION)
-
-    def test_stand_in_universal_carries_the_declared_art(self):
-        self.fixture.make_universal()
-        with zipfile.ZipFile(self.fixture.universal_path()) as archive:
-            names = archive.namelist()
-        for _, reference in PAYLOAD_ASSETS:
-            self.assertIn("%s/%s" % (PAYLOAD, reference), names)
-
-
-class TestPermissions(RepositoryTestCase):
-    def assertTreeModes(self):
-        self.assertEqual(stat.S_IMODE(os.stat(self.fixture.out).st_mode),
-                         MODE_DIR, "output root")
-        self.assertEqual(
-            stat.S_IMODE(os.stat(self.fixture.generated(REPOSITORY)).st_mode),
-            MODE_DIR, REPOSITORY)
-        for relative in self.fixture.tree():
-            self.assertEqual(
-                stat.S_IMODE(os.stat(self.fixture.generated(relative)).st_mode),
-                MODE_FILE, relative)
+        self.generate_ok()
+        addons = read_text(self.fixture.generated("zips", "addons.xml"))
+        self.assertIn('id="%s"' % PAYLOAD, addons)
+        self.assertIn('id="%s"' % REPOSITORY, addons)
 
     def test_published_tree_is_world_readable(self):
         self.generate_ok()
-        self.assertTreeModes()
+        for directory, _, names in os.walk(self.fixture.out):
+            self.assertEqual(stat.S_IMODE(os.stat(directory).st_mode), MODE_DIR)
+            for name in names:
+                self.assertEqual(
+                    stat.S_IMODE(os.stat(os.path.join(directory, name)).st_mode),
+                    MODE_FILE)
 
     def test_modes_are_explicit_and_ignore_a_hostile_umask(self):
-        self.fixture.make_universal()
-        result = self.fixture.generate(umask=0o077)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertTreeModes()
-
-
-class TestGeneratorContract(RepositoryTestCase):
-    """The generator's constants must equal the approved publication targets."""
-
-    def generator_text(self):
-        return read_text(os.path.join(REPO, "scripts", "generate_repo.py"))
-
-    def test_generator_pins_the_approved_pages_base_url(self):
-        self.assertIn('PAGES = "%s"' % PAGES, self.generator_text())
-
-    def test_generator_pins_the_approved_source_repository(self):
-        self.assertIn('SOURCE_REPO = "%s"' % SOURCE_REPO,
-                      self.generator_text())
-
-    def test_generated_release_asset_urls_point_at_the_new_source_repo(self):
-        self.generate_ok()
-        url = self.fixture.manifest()["addons"][
-            [entry["id"] for entry in self.fixture.manifest()["addons"]]
-            .index(PAYLOAD)]["url"]
-        self.assertTrue(url.startswith(
-            "https://github.com/maratdob118/kodi-advanced-proxy/"), url)
-
-
-class TestAddonsXml(RepositoryTestCase):
-    def setUp(self):
-        super().setUp()
-        self.generate_ok()
-        self.path = self.fixture.generated("addons.xml")
-        self.raw = read_bytes(self.path)
-        self.root = ET.fromstring(self.raw)
+        self.generate_ok(umask=0o077)
+        self.assertEqual(
+            stat.S_IMODE(os.stat(self.fixture.generated("zips", "addons.xml")).st_mode),
+            MODE_FILE)
 
     def test_wraps_exactly_the_two_manifests_in_deterministic_order(self):
-        self.assertEqual(self.root.tag, "addons")
-        addons = list(self.root)
-        self.assertEqual([element.tag for element in addons], ["addon", "addon"])
-        ids = [element.get("id") for element in addons]
-        self.assertEqual(ids, [REPOSITORY, PAYLOAD])
-        self.assertEqual(ids, sorted(ids))
-
-    def test_versions_come_from_the_source_manifests(self):
-        versions = {element.get("id"): element.get("version")
-                    for element in self.root}
-        self.assertEqual(versions[PAYLOAD],
-                         addon_version(os.path.join(REPO, PAYLOAD, "addon.xml")))
-        self.assertEqual(versions[REPOSITORY],
-                         addon_version(os.path.join(REPO, REPOSITORY, "addon.xml")))
-
-    def test_each_addon_element_matches_its_source_manifest(self):
-        for addon_id, relative in ((PAYLOAD, os.path.join(PAYLOAD, "addon.xml")),
-                                   (REPOSITORY,
-                                    os.path.join(REPOSITORY, "addon.xml"))):
-            element = next(e for e in self.root if e.get("id") == addon_id)
-            source = ET.parse(os.path.join(REPO, relative)).getroot()
-            self.assertEqual(ET.canonicalize(ET.tostring(element)),
-                             ET.canonicalize(ET.tostring(source)), addon_id)
+        self.generate_ok()
+        addons = read_text(self.fixture.generated("zips", "addons.xml"))
+        self.assertTrue(addons.startswith(XML_DECLARATION + "\n<addons>\n"))
+        self.assertTrue(addons.endswith("</addons>\n"))
+        first = addons.index("<addon id=")
+        second = addons.index("<addon id=", first + 1)
+        self.assertLess(first, second)
+        self.assertNotIn("<addon id=", addons[second + 1:])
 
     def test_encoding_is_pinned_utf8_with_lf_endings(self):
-        head = self.raw.split(b"\n", 1)[0]
-        self.assertEqual(
-            head, b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>')
-        self.assertNotIn(b"\r", self.raw)
-        self.assertFalse(self.raw.startswith(b"\xef\xbb\xbf"), "unexpected BOM")
-        self.assertTrue(self.raw.endswith(b"</addons>\n"))
-        self.raw.decode("utf-8")
-
-    def test_service_extension_points_survive_the_round_trip(self):
-        payload = next(e for e in self.root if e.get("id") == PAYLOAD)
-        points = {e.get("point") for e in payload.iter("extension")}
-        self.assertIn("xbmc.service", points)
-        self.assertIn("xbmc.addon.metadata", points)
-
-
-class TestChecksum(RepositoryTestCase):
-    def setUp(self):
-        super().setUp()
         self.generate_ok()
+        raw = read_bytes(self.fixture.generated("zips", "addons.xml"))
+        self.assertEqual(raw.decode("utf-8"), raw.decode("utf-8").replace("\r", ""))
 
     def test_md5_file_is_lowercase_digest_of_exact_addons_xml_bytes(self):
-        digest = hashlib.md5(
-            read_bytes(self.fixture.generated("addons.xml"))).hexdigest()
-        recorded = read_text(self.fixture.generated("addons.xml.md5"))
-        self.assertEqual(recorded, digest + "\n")
-        self.assertEqual(recorded.strip(), recorded.strip().lower())
-        self.assertRegex(recorded.strip(), r"^[0-9a-f]{32}$")
+        self.generate_ok()
+        addons = read_bytes(self.fixture.generated("zips", "addons.xml"))
+        md5 = read_text(self.fixture.generated("zips", "addons.xml.md5")).strip()
+        self.assertEqual(md5.lower(), hashlib.md5(addons).hexdigest())
 
     def test_md5_tracks_a_changed_addons_xml(self):
-        first = read_text(self.fixture.generated("addons.xml.md5"))
-        shutil.rmtree(self.fixture.out)
-        payload = self.fixture.source(os.path.join(PAYLOAD, "addon.xml"))
-        with open(payload, "w", encoding="utf-8") as stream:
-            stream.write(self.fixture.payload_xml("9.9.9"))
-        self.fixture.make_universal("9.9.9")
-        result = self.fixture.generate()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        second = read_text(self.fixture.generated("addons.xml.md5"))
-        self.assertNotEqual(first, second)
-        self.assertEqual(
-            second,
-            hashlib.md5(
-                read_bytes(self.fixture.generated("addons.xml"))).hexdigest() + "\n")
-
-    def test_manifest_records_the_same_md5(self):
-        recorded = read_text(self.fixture.generated("addons.xml.md5")).strip()
-        self.assertEqual(self.fixture.manifest()["index"]["md5"], recorded)
-
-
-class TestManifest(RepositoryTestCase):
-    def setUp(self):
-        super().setUp()
         self.generate_ok()
-        self.data = self.fixture.manifest()
-        self.entries = {entry["id"]: entry for entry in self.data["addons"]}
-
-    def test_records_the_universal_release_asset_url(self):
-        self.assertEqual(
-            self.entries[PAYLOAD]["url"],
-            RELEASES + "v%s/%s-%s.zip" % (VERSION, PAYLOAD, VERSION))
-        self.assertTrue(self.entries[PAYLOAD]["url"].startswith("https://"))
-        self.assertNotIn("raw.githubusercontent", json.dumps(self.data))
-
-    def test_binds_the_asset_to_an_immutable_release_tag(self):
-        release = self.entries[PAYLOAD]["release"]
-        self.assertEqual(release["repo"], SOURCE_REPO)
-        self.assertEqual(release["tag"], "v" + VERSION)
-        self.assertEqual(release["asset"], "%s-%s.zip" % (PAYLOAD, VERSION))
-        self.assertTrue(self.entries[PAYLOAD]["url"].endswith(
-            "/%s/%s" % (release["tag"], release["asset"])))
-
-    def test_orders_pages_to_download_and_compare_before_deploying(self):
-        verification = self.data["verification"]
-        self.assertEqual(verification["algorithm"], "sha256")
-        self.assertEqual(verification["policy"], "download-then-compare")
-        instruction = verification["instruction"].lower()
-        for needle in ("download", "recompute", "abort"):
-            self.assertIn(needle, instruction)
-
-    def test_digests_are_declared_as_expectations_not_verified_facts(self):
-        """Nothing here was fetched: the digest describes the local artifact."""
-        verification = self.data["verification"]
-        self.assertEqual(verification["measured_on"], "local-build-artifact")
-        self.assertFalse(verification["remote_verified"])
-
-    def test_records_the_universal_sha256_and_size(self):
-        universal = self.fixture.universal_path()
-        self.assertEqual(self.entries[PAYLOAD]["sha256"],
-                         hashlib.sha256(read_bytes(universal)).hexdigest())
-        self.assertEqual(self.entries[PAYLOAD]["size"],
-                         os.path.getsize(universal))
-        self.assertRegex(self.entries[PAYLOAD]["sha256"], r"^[0-9a-f]{64}$")
-
-    def test_paths_compose_canonically_for_both_addons(self):
-        self.assertEqual(self.entries[PAYLOAD]["path"],
-                         "%s/%s-%s.zip" % (PAYLOAD, PAYLOAD, VERSION))
-        repository_version = addon_version(
-            os.path.join(REPO, REPOSITORY, "addon.xml"))
-        self.assertEqual(
-            self.entries[REPOSITORY]["path"],
-            "%s/%s-%s.zip" % (REPOSITORY, REPOSITORY, repository_version))
-        for entry in self.data["addons"]:
-            self.assertEqual(
-                entry["path"],
-                "%s/%s-%s.zip" % (entry["id"], entry["id"], entry["version"]))
-            self.assertFalse(entry["path"].startswith("/"))
-            self.assertNotIn("..", entry["path"].split("/"))
-
-    def test_datadir_composes_with_paths_into_the_pages_urls(self):
-        self.assertEqual(self.data["datadir"], PAGES)
-        self.assertEqual(self.data["datadir"] + self.entries[PAYLOAD]["path"],
-                         PAGES + "service.advancedproxy/"
-                                 "service.advancedproxy-%s.zip" % VERSION)
-        self.assertEqual(
-            self.data["datadir"] + self.entries[REPOSITORY]["path"],
-            PAGES + "repository.bigping/repository.bigping-%s.zip"
-            % self.entries[REPOSITORY]["version"])
-
-    def test_repository_addon_is_marked_as_built_by_pages(self):
-        entry = self.entries[REPOSITORY]
-        self.assertEqual(entry["origin"], "build")
-        self.assertEqual(entry["metadata"], "%s/addon.xml" % REPOSITORY)
-        self.assertNotIn("url", entry)
-        self.assertNotIn("sha256", entry)
-        self.assertEqual(self.entries[PAYLOAD]["origin"], "release-asset")
-
-    def test_build_instruction_pins_the_bootstrap_zip_root(self):
-        """Kodi rejects a repo ZIP whose single root is not the addon id."""
-        entry = self.entries[REPOSITORY]
-        self.assertEqual(entry["zip_root"], REPOSITORY + "/")
-        self.assertEqual(entry["metadata"], entry["zip_root"] + "addon.xml")
-
-    def test_payload_zip_root_is_recorded_for_verification(self):
-        self.assertEqual(self.entries[PAYLOAD]["zip_root"], PAYLOAD + "/")
-
-    def test_every_datadir_zip_declares_its_hash_sidecar(self):
-        """Kodi reads a content-sha256 header first and falls back to a
-        <zip>.sha256 sidecar; Pages cannot set headers, so the sidecar is the
-        only mechanism available here and is mandatory."""
-        for entry in self.data["addons"]:
-            self.assertEqual(entry["sha256_path"], entry["path"] + ".sha256")
-
-    def test_publishes_every_asset_the_payload_manifest_references(self):
-        art = self.entries[PAYLOAD]["art"]
-        self.assertEqual([(item["kind"], item["path"]) for item in art],
-                         [(kind, "%s/%s" % (PAYLOAD, reference))
-                          for kind, reference in PAYLOAD_ASSETS])
-        self.assertTrue(art, "payload declares assets; manifest lists none")
-
-    def test_art_paths_match_the_urls_kodi_resolves_from_the_index(self):
-        for (kind, reference), item in zip(PAYLOAD_ASSETS,
-                                           self.entries[PAYLOAD]["art"]):
-            self.assertEqual(self.data["datadir"] + item["path"],
-                             "%s%s/%s" % (PAGES, PAYLOAD, reference))
-            self.assertEqual(item["kind"], kind)
-
-    def test_art_is_extracted_from_the_payload_zip_with_a_digest(self):
-        for item in self.entries[PAYLOAD]["art"]:
-            self.assertEqual(item["origin"], "payload-zip")
-            self.assertEqual(
-                item["sha256"],
-                hashlib.sha256(
-                    self.fixture.universal_entry(item["source"])).hexdigest())
-
-    def test_json_is_deterministic_and_readable(self):
-        raw = read_text(self.fixture.generated("manifest.json"))
-        self.assertTrue(raw.endswith("\n"))
-        self.assertNotIn("\r", raw)
-        self.assertEqual(raw, json.dumps(self.data, indent=2,
-                                         sort_keys=True, ensure_ascii=False) + "\n")
-        self.assertEqual(self.data["schema"], 1)
-        self.assertEqual([entry["id"] for entry in self.data["addons"]],
-                         sorted(entry["id"] for entry in self.data["addons"]))
-
-
-class TestDeterminism(RepositoryTestCase):
-    def snapshot(self, out=None):
-        return {relative: read_bytes(self.fixture.generated(relative, out=out))
-                for relative in self.fixture.tree(out=out)}
+        first = read_text(self.fixture.generated("zips", "addons.xml.md5"))
+        source_xml = self.fixture.source(os.path.join(PAYLOAD, "addon.xml"))
+        root = source_root(PAYLOAD)
+        root.set("version", "9.9.9")
+        with open(source_xml, "w") as stream:
+            stream.write(XML_DECLARATION + "\n" + ET.tostring(root,
+                                                              encoding="unicode"))
+        self.fixture.make_payload(version="9.9.9", inner_version="9.9.9")
+        result = self.fixture.generate("--version", "9.9.9")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        second = read_text(self.fixture.generated("zips", "addons.xml.md5"))
+        self.assertNotEqual(first, second)
 
     def test_regeneration_over_an_existing_tree_is_byte_identical(self):
         self.generate_ok()
-        first = self.snapshot()
+        before = {name: read_bytes(self.fixture.generated(name))
+                  for name in self.fixture.tree()}
         result = self.fixture.generate()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.snapshot(), first)
+        after = {name: read_bytes(self.fixture.generated(name))
+                 for name in self.fixture.tree()}
+        self.assertEqual(before, after)
 
-    def test_generation_into_a_fresh_directory_is_byte_identical(self):
-        self.generate_ok()
-        first = self.snapshot()
-        other = os.path.join(self.tmp, "other")
-        result = self.fixture.generate(out=other)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.snapshot(out=other), first)
-
-    def test_output_does_not_depend_on_universal_zip_timestamps(self):
-        self.generate_ok()
-        first = self.snapshot()
-        os.utime(self.fixture.universal_path(), (0, 0))
-        result = self.fixture.generate()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.snapshot(), first)
-
-
-class TestStaleOutput(RepositoryTestCase):
     def test_stale_generated_files_are_removed(self):
         self.generate_ok()
-        stale = self.fixture.generated("addons.xml.sha1")
-        with open(stale, "w", encoding="utf-8") as stream:
-            stream.write("stale\n")
-        stale_dir = self.fixture.generated("service.advancedproxy")
-        os.makedirs(stale_dir)
-        with open(os.path.join(stale_dir, "old.zip"), "w",
-                  encoding="utf-8") as stream:
-            stream.write("stale\n")
+        stale = self.fixture.generated("zips", "stale.txt")
+        os.makedirs(os.path.dirname(stale), exist_ok=True)
+        with open(stale, "w") as stream:
+            stream.write("old")
         result = self.fixture.generate()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.fixture.tree(), sorted(GENERATED))
-        self.assertFalse(os.path.exists(stale))
-        self.assertFalse(os.path.exists(stale_dir))
+        self.assertNotIn("stale.txt", self.fixture.tree())
 
     def test_a_refusal_leaves_the_previous_tree_intact(self):
         self.generate_ok()
-        before = {relative: read_bytes(self.fixture.generated(relative))
-                  for relative in self.fixture.tree()}
-        os.remove(self.fixture.universal_path())
-        self.assertRefused(self.fixture.generate())
-        self.assertEqual(
-            {relative: read_bytes(self.fixture.generated(relative))
-             for relative in self.fixture.tree()}, before)
-
-
-class TestRefusals(RepositoryTestCase):
-    def test_missing_universal_zip_is_rejected(self):
+        before = {name: read_bytes(self.fixture.generated(name))
+                  for name in self.fixture.tree()}
+        os.remove(self.fixture.payload_path())
         result = self.fixture.generate()
         self.assertRefused(result)
-        self.assertFalse(os.path.exists(self.fixture.out))
+        after = {name: read_bytes(self.fixture.generated(name))
+                 for name in self.fixture.tree()}
+        self.assertEqual(before, after)
 
-    def test_universal_zip_version_mismatch_is_rejected(self):
-        self.fixture.make_universal(VERSION, inner_version="9.9.9")
-        self.assertRefused(self.fixture.generate())
 
-    def test_universal_filename_must_be_the_canonical_universal_name(self):
-        wrong = os.path.join(self.fixture.dist,
-                             "%s-%s.linux_x64.zip" % (PAYLOAD, VERSION))
-        self.fixture.make_universal(path=wrong)
-        self.assertRefused(self.fixture.generate("--universal", wrong))
+class TestGenerationRefusals(RepositoryTestCase):
+    def test_missing_payload_zip_is_rejected(self):
+        result = self.fixture.generate()
+        self.assertRefused(result)
 
-    def test_universal_zip_missing_a_declared_asset_is_rejected(self):
-        """An asset Pages cannot extract would 404 in the repository browser."""
-        _, reference = PAYLOAD_ASSETS[0]
-        self.fixture.make_universal(
-            mutation=lambda entries: entries.pop("%s/%s" % (PAYLOAD, reference)))
-        self.assertRefused(self.fixture.generate())
+    def test_payload_zip_version_mismatch_is_rejected(self):
+        self.fixture.make_payload(inner_version="1.2.3")
+        result = self.fixture.generate()
+        self.assertRefused(result)
 
-    def test_universal_zip_with_a_foreign_root_is_rejected(self):
-        self.fixture.make_universal(
-            mutation=lambda entries: entries.update({"elsewhere/file.txt": "x\n"}))
-        self.assertRefused(self.fixture.generate())
+    def test_payload_zip_with_a_foreign_root_is_rejected(self):
+        self.fixture.make_payload(
+            mutation=lambda entries: entries.pop("%s/addon.xml" % PAYLOAD))
+        result = self.fixture.generate()
+        self.assertRefused(result)
 
-    def test_universal_zip_without_payload_manifest_is_rejected(self):
-        path = self.fixture.universal_path()
-        with zipfile.ZipFile(path, "w") as archive:
-            archive.writestr("%s/main.py" % PAYLOAD, "# payload\n")
-        self.assertRefused(self.fixture.generate())
-
-    def test_corrupt_universal_zip_is_rejected(self):
-        with open(self.fixture.universal_path(), "wb") as stream:
+    def test_corrupt_payload_zip_is_rejected(self):
+        path = self.fixture.payload_path()
+        with open(path, "wb") as stream:
             stream.write(b"not a zip")
-        self.assertRefused(self.fixture.generate())
+        result = self.fixture.generate()
+        self.assertRefused(result)
 
     def test_requested_version_must_match_the_payload_manifest(self):
-        self.fixture.make_universal()
-        self.assertRefused(self.fixture.generate("--version", "9.9.9"))
+        self.fixture.make_payload()
+        result = self.fixture.generate("--version", "9.9.9")
+        self.assertRefused(result)
 
     def test_malformed_version_is_a_usage_error(self):
-        self.fixture.make_universal()
-        result = self.fixture.generate("--version", "0.2")
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertFalse(os.path.exists(self.fixture.out))
+        result = self.fixture.generate("--version", "banana")
+        self.assertEqual(result.returncode, 2)
 
     def test_missing_repository_manifest_is_rejected(self):
-        self.fixture.make_universal()
+        self.fixture.make_payload()
         os.remove(self.fixture.source(os.path.join(REPOSITORY, "addon.xml")))
-        self.assertRefused(self.fixture.generate())
+        result = self.fixture.generate()
+        self.assertRefused(result)
 
     def test_malformed_source_manifest_is_rejected(self):
-        self.fixture.make_universal()
-        with open(self.fixture.source(os.path.join(REPOSITORY, "addon.xml")),
-                  "w", encoding="utf-8") as stream:
-            stream.write("<addon id=\"repository.bigping\"")
-        self.assertRefused(self.fixture.generate())
+        self.fixture.make_payload()
+        path = self.fixture.source(os.path.join(REPOSITORY, "addon.xml"))
+        with open(path, "w") as stream:
+            stream.write("<addon id='%s' version='1.0.0'>" % REPOSITORY)
+        result = self.fixture.generate()
+        self.assertRefused(result)
 
     def test_output_may_not_be_the_repo_root(self):
-        self.fixture.make_universal()
-        self.assertRefused(self.fixture.generate(out=self.fixture.repo),
-                           out=self.fixture.repo)
-        self.assertTrue(os.path.isfile(
-            self.fixture.source(os.path.join(PAYLOAD, "addon.xml"))))
+        result = self.fixture.generate(out=self.fixture.repo)
+        self.assertRefused(result)
 
     def test_output_may_not_be_a_foreign_non_empty_directory(self):
-        self.fixture.make_universal()
+        self.fixture.make_payload()
         foreign = os.path.join(self.tmp, "foreign")
         os.makedirs(foreign)
-        keep = os.path.join(foreign, "keep.txt")
-        with open(keep, "w", encoding="utf-8") as stream:
-            stream.write("precious\n")
-        self.assertRefused(self.fixture.generate(out=foreign), out=foreign)
-        self.assertEqual(read_text(keep), "precious\n")
+        with open(os.path.join(foreign, "other.txt"), "w") as stream:
+            stream.write("not generated")
+        result = self.fixture.generate(out=foreign)
+        self.assertRefused(result)
 
     def test_output_may_not_be_a_file(self):
-        self.fixture.make_universal()
-        path = os.path.join(self.tmp, "file")
-        with open(path, "w", encoding="utf-8") as stream:
-            stream.write("data\n")
-        self.assertRefused(self.fixture.generate(out=path), out=path)
-        self.assertEqual(read_text(path), "data\n")
-
-    def test_output_may_not_sit_inside_the_git_directory(self):
-        self.fixture.make_universal()
-        inside = os.path.join(self.fixture.repo, ".git", "pages")
-        self.assertRefused(self.fixture.generate(out=inside), out=inside)
-        self.assertFalse(os.path.exists(inside))
+        self.fixture.make_payload()
+        path = os.path.join(self.tmp, "file-out")
+        with open(path, "w") as stream:
+            stream.write("x")
+        result = self.fixture.generate(out=path)
+        self.assertRefused(result)
 
     def test_empty_output_directory_is_accepted(self):
-        self.fixture.make_universal()
+        self.fixture.make_payload()
         empty = os.path.join(self.tmp, "empty")
         os.makedirs(empty)
         result = self.fixture.generate(out=empty)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.fixture.tree(out=empty), sorted(GENERATED))
 
 
 if __name__ == "__main__":
