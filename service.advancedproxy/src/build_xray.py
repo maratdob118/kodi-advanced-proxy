@@ -10,6 +10,8 @@ Modes:
 Kodi-free.
 """
 
+import os
+
 _ENGINE_UNSUPPORTED = {"tuic"}
 
 
@@ -168,6 +170,24 @@ def _dns_block(settings):
     return block
 
 
+def _geo_rules(settings, geo_paths):
+    """Routing rules for downloaded geo databases, only when present on disk.
+
+    A rule referencing a missing geoip.dat/geosite.dat makes Xray refuse the
+    whole config, so the rule is emitted only when the file exists.
+    """
+    rules = []
+    geoip = (geo_paths or {}).get("geoip")
+    geosite = (geo_paths or {}).get("geosite")
+    if (settings.get("geoip_url") or "").strip() and geoip and os.path.exists(geoip):
+        rules.append({"type": "field", "ip": ["geoip:ru-blocked"],
+                      "outboundTag": "direct"})
+    if (settings.get("geosite_url") or "").strip() and geosite and os.path.exists(geosite):
+        rules.append({"type": "field", "domain": ["geosite:ru-blocked"],
+                      "outboundTag": "direct"})
+    return rules
+
+
 def build_config(profiles, settings, active_tag=None):
     outbounds, tags, skipped = build_outbounds(profiles)
     if not tags:
@@ -176,16 +196,11 @@ def build_config(profiles, settings, active_tag=None):
     mode = settings.get("mode", "urltest")
     rules = [{"type": "field", "ip": ["geoip:private"],
               "outboundTag": "direct"}]
-    if (settings.get("geoip_url") or "").strip():
-        rules.insert(0, {"type": "field", "ip": ["geoip:ru-blocked"],
-                         "outboundTag": "direct"})
-    if (settings.get("geosite_url") or "").strip():
-        rules.insert(0, {"type": "field",
-                         "domain": ["geosite:ru-blocked"],
-                         "outboundTag": "direct"})
     if settings.get("direct_torrent"):
         rules.insert(0, {"type": "field", "protocol": ["bittorrent"],
                          "outboundTag": "direct"})
+    for rule in reversed(_geo_rules(settings, settings.get("geo_paths"))):
+        rules.insert(0, rule)
     balancer = None
     observatory = None
     if mode == "manual":

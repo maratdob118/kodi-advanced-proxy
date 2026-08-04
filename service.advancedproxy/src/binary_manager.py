@@ -90,9 +90,11 @@ class BinaryManager(object):
 
         os.makedirs(self.work_dir_bin, exist_ok=True)
         if self._sync_from_bundle():
+            self._sync_geo_files_from_profile()
             return self.work_binary
         self.log("Bundled %s not found for %s, downloading..." % (self.engine, self.platform))
         self._download_binary()
+        self._sync_geo_files_from_profile()
         if not os.path.exists(self.work_binary):
             raise RuntimeError("%s binary unavailable for platform %s" % (self.engine, self.platform))
         self._make_exec(self.work_binary)
@@ -135,6 +137,25 @@ class BinaryManager(object):
         for name in ("geoip.dat", "geosite.dat"):
             src = os.path.join(self.addon_dir, "resources", "bin",
                                self.platform, name)
+            dst = os.path.join(self.work_dir_bin, name)
+            if os.path.exists(src) and (
+                    not os.path.exists(dst)
+                    or os.path.getsize(src) != os.path.getsize(dst)):
+                shutil.copy2(src, dst)
+
+    def _sync_geo_files_from_profile(self):
+        """Override bundled geo DBs with downloaded ones from the profile dir.
+
+        The bundled geoip.dat (from the official Xray release) has no
+        ru-blocked category; the downloaded one (runetfreedom) does. Xray
+        loads geoip.dat from its own directory, so the downloaded DB must
+        win whenever it exists, or rules referencing ru-blocked would make
+        the config invalid.
+        """
+        if self.engine != "xray":
+            return
+        for name in ("geoip.dat", "geosite.dat"):
+            src = os.path.join(self.work_dir, name)
             dst = os.path.join(self.work_dir_bin, name)
             if os.path.exists(src) and (
                     not os.path.exists(dst)
