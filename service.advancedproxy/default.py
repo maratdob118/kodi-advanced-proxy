@@ -121,9 +121,12 @@ def _show_listing(handle):
                 (_ls(32227), "RunPlugin(%s)" % e["refresh_url"]),
                 (_ls(32228), "RunPlugin(%s)" % e["remove_url"]),
             ])
-            xbmcplugin.addDirectoryItem(handle, e["url"], liz, isFolder=False)
+            xbmcplugin.addDirectoryItem(handle, e["click_url"], liz,
+                                        isFolder=False)
         elif kind == "mode_toggle":
-            mode_label = _ls(32108) if mode == "urltest" else _ls(32109)
+            mode_labels = {"urltest": _ls(32108), "manual": _ls(32109),
+                           "direct": _ls(32251)}
+            mode_label = mode_labels.get(mode, _ls(32108))
             label = _ls(32220) % mode_label
             liz = xbmcgui.ListItem(label=label)
             liz.setProperty("isPlayable", "false")
@@ -207,7 +210,6 @@ def _action_activate_reachable(handle, tag):
         else:
             _notify(_ls(32219), error=True)
     else:
-        xbmcaddon.Addon(ADDON_ID).setSetting("mode", "1")
         if store.set_active(tag):
             _notify(_ls(32221) % tag)
         else:
@@ -218,10 +220,12 @@ def _action_activate_reachable(handle, tag):
 def _action_toggle_mode(handle):
     addon = xbmcaddon.Addon(ADDON_ID)
     current = addon.getSetting("mode")
-    new_mode = "1" if current == "0" else "0"
-    addon.setSetting("mode", new_mode)
-    mode_label = _ls(32108) if new_mode == "0" else _ls(32109)
-    _notify(_ls(32220) % mode_label)
+    modes = ["0", "1", "2"]
+    current_index = modes.index(current) if current in modes else 0
+    next_index = (current_index + 1) % len(modes)
+    addon.setSetting("mode", modes[next_index])
+    mode_labels = [_ls(32108), _ls(32109), _ls(32251)]
+    _notify(_ls(32220) % mode_labels[next_index])
     _finish_action(handle)
 
 

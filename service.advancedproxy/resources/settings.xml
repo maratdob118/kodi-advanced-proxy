@@ -39,6 +39,7 @@
                         <options>
                             <option label="32108">0</option>
                             <option label="32109">1</option>
+                            <option label="32251">2</option>
                         </options>
                     </constraints>
                     <control type="list" format="string">

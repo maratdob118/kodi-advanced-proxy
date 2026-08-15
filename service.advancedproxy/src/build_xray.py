@@ -202,7 +202,7 @@ def build_config(profiles, settings, active_tag=None):
     balancer = None
     observatory = None
     final = "direct"
-    if tags:
+    if mode != "direct" and tags:
         if mode == "manual":
             default = active_tag if active_tag in tags else tags[0]
             rules.append({"type": "field", "network": "tcp,udp",

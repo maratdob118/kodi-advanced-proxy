@@ -353,6 +353,15 @@ class TestBuildSingbox(unittest.TestCase):
         sel = [o for o in cfg["outbounds"] if o["type"] == "selector"][0]
         self.assertEqual(sel["interrupt_exist_connections"], False)
 
+    def test_direct_mode_forces_direct_even_with_profiles(self):
+        profs, _ = parsers.parse_lines([VLESS, HY2])
+        cfg, _ = build_singbox.build_config(profs, self._settings(mode="direct"))
+        self.assertEqual(cfg["route"]["final"], "direct")
+        types = [o["type"] for o in cfg["outbounds"]]
+        self.assertNotIn("urltest", types)
+        self.assertNotIn("selector", types)
+        self.assertEqual(types, ["direct"])
+
 
 class TestBuildXray(unittest.TestCase):
     def _settings(self, **kw):
@@ -386,6 +395,17 @@ class TestBuildXray(unittest.TestCase):
                                          active_tag="AUTO:Trojan")
         rule = [r for r in cfg["routing"]["rules"] if r.get("outboundTag") == "AUTO:Trojan"]
         self.assertTrue(rule)
+
+    def test_direct_mode_forces_direct_even_with_profiles(self):
+        profs, _ = parsers.parse_lines([VLESS, TROJAN])
+        cfg, _ = build_xray.build_config(profs, self._settings(mode="direct"),
+                                         active_tag="AUTO:Trojan")
+        self.assertEqual(cfg["routing"]["final"], "direct")
+        self.assertNotIn("balancers", cfg["routing"])
+        self.assertNotIn("burstObservatory", cfg)
+        self.assertFalse([r for r in cfg["routing"]["rules"]
+                          if r.get("balancerTag") or
+                          r.get("outboundTag") == "AUTO:Trojan"])
 
     def test_private_ip_traffic_goes_direct(self):
         profs, _ = parsers.parse_lines([VLESS, TROJAN])
@@ -495,6 +515,31 @@ class TestHelpers(unittest.TestCase):
         self.assertIs(s["notify"], False)
         self.assertEqual(s["local_port"], 8080)
         self.assertEqual(s["log_level"], "warn")
+
+    def test_direct_mode_normalization(self):
+        s = helpers.get_settings(reader=lambda: {"mode": "2"})
+        self.assertEqual(s["mode"], "direct")
+
+    def test_probe_with_backoff_retries_then_succeeds(self):
+        calls = {"n": 0}
+        slept = []
+
+        def prober(host, port, timeout):
+            calls["n"] += 1
+            return 42 if calls["n"] >= 3 else None
+
+        ms = helpers.probe_with_backoff("h", 1, prober=prober,
+                                        sleeper=slept.append)
+        self.assertEqual(ms, 42)
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual(slept, [3, 6])
+
+    def test_probe_with_backoff_gives_up_after_full_schedule(self):
+        slept = []
+        ms = helpers.probe_with_backoff(
+            "h", 1, prober=lambda h, p, t: None, sleeper=slept.append)
+        self.assertIsNone(ms)
+        self.assertEqual(slept, [3, 6, 12, 24, 60])
 
     def test_sync_geo_databases_downloads_both(self):
         fetches = {}
@@ -814,6 +859,38 @@ class TestSubscriptionUiContract(unittest.TestCase):
             src = f.read()
         self.assertIn("helpers.pick_reachable", src,
                       "activation must use the reachability probe")
+
+    def test_auto_activation_does_not_switch_to_manual(self):
+        path = os.path.join(HERE, "..", "service.advancedproxy", "default.py")
+        with open(path) as f:
+            src = f.read()
+        start = src.index("def _action_activate_reachable(")
+        end = src.index("\ndef ", start + 1)
+        body = src[start:end]
+        self.assertNotIn('setSetting("mode", "1")', body,
+                         "auto-mode activation must stay in auto, not "
+                         "switch to manual")
+
+    def test_subscription_click_defaults_to_refresh(self):
+        path = os.path.join(HERE, "..", "service.advancedproxy", "default.py")
+        with open(path) as f:
+            src = f.read()
+        start = src.index('elif kind == "subscription":')
+        end = src.index("elif kind ==", start + 1)
+        body = src[start:end]
+        self.assertIn('e["click_url"]', body,
+                      "subscription row must be clickable")
+        self.assertIn("sub_refresh", src)
+
+    def test_mode_toggle_cycles_three_modes(self):
+        path = os.path.join(HERE, "..", "service.advancedproxy", "default.py")
+        with open(path) as f:
+            src = f.read()
+        start = src.index("def _action_toggle_mode(")
+        end = src.index("\ndef ", start + 1)
+        body = src[start:end]
+        self.assertIn('["0", "1", "2"]', body,
+                      "mode toggle must cycle urltest/manual/direct")
 
     def test_default_sub_refresh_applies_protocol_filter(self):
         path = os.path.join(HERE, "..", "service.advancedproxy", "default.py")

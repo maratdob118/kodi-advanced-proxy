@@ -207,7 +207,10 @@ def build_config(profiles, settings, active_tag=None):
     outbounds, tags, skipped = build_outbounds(profiles)
 
     mode = settings.get("mode", "urltest")
-    if tags:
+    if mode == "direct":
+        chooser = None
+        final = "direct"
+    elif tags:
         if mode == "manual":
             default = active_tag if active_tag in tags else tags[0]
             chooser = {

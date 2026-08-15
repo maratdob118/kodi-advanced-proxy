@@ -41,7 +41,7 @@ _DEFAULTS = {
 
 _LOG_LEVELS = {"0": "debug", "1": "info", "2": "warn", "3": "error"}
 _ENGINES = {"0": "sing-box", "1": "xray"}
-_MODES = {"0": "urltest", "1": "manual"}
+_MODES = {"0": "urltest", "1": "manual", "2": "direct"}
 _DNS_STRATEGIES = {
     "0": "", "1": "prefer_ipv4", "2": "ipv4_only",
     "3": "prefer_ipv6", "4": "ipv6_only",
@@ -280,6 +280,29 @@ def _real_prober(host, port, timeout):
         return None
 
 
+TIMEOUT_BACKOFF = (0, 3, 6, 12, 24, 60)
+
+
+def probe_with_backoff(host, port, timeout=4.0, prober=None,
+                       backoff=TIMEOUT_BACKOFF, sleeper=None):
+    """Probe HOST:PORT, retrying on timeout with an escalating backoff.
+
+    Retries only on a failed probe (None result): immediate re-test, then
+    3s, 6s, 12s, 24s, 60s. Returns latency ms on the first success, else None.
+    Not used by the directory listing (measure_latencies) so a stalled host
+    never blocks the UI; intended for the interactive test and auto-switch.
+    """
+    prober = prober or _real_prober
+    sleeper = sleeper or time.sleep
+    for attempt, delay in enumerate(backoff):
+        if delay:
+            sleeper(delay)
+        ms = prober(host, port, timeout)
+        if ms is not None:
+            return ms
+    return None
+
+
 def measure_latencies(profiles, prober=None, timeout=2.0, max_concurrent=8):
     """Return {tag: ms_or_None} for every profile.
 
@@ -369,6 +392,7 @@ def build_directory_entries(store, mode, base_url, latencies=None,
             "id": group["id"],
             "url": group["url"],
             "status": status,
+            "click_url": base_url + "?action=sub_refresh&" + id_q,
             "refresh_url": base_url + "?action=sub_refresh&" + id_q,
             "remove_url": base_url + "?action=sub_remove&" + id_q,
         })

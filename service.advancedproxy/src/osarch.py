@@ -61,13 +61,15 @@ def _is_android():
 
 def _linux_arch():
     machine = platform.machine().lower()
-    if machine.startswith("armv7") or machine.startswith("aarch64") and machine == "aarch64_be":
+    if machine in ("aarch64_be",) or machine.startswith("aarch64"):
+        return "linux_arm64"
+    if machine.startswith("armv7"):
         return "linux_armv7"
     if machine.startswith("armv6"):
         return "linux_armv6"
     if machine.startswith("armv5"):
         return "linux_armv5"
-    if machine.startswith("armv8") or machine.startswith("aarch64"):
+    if machine.startswith("armv8"):
         return "linux_arm64"
     if machine.startswith("arm"):
         return "linux_armv7"
