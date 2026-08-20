@@ -49,9 +49,9 @@ Under the hood it uses the two most popular open-source proxy engines — **sing
 
 **From the Kodi repository (recommended — auto-updates):**
 
-1. Download `repository.bigping-<version>.zip` from the [latest release](https://github.com/maratdob118/kodi-advanced-proxy/releases).
+1. Download `repository.maratdob118-<version>.zip` from the [latest release](https://github.com/maratdob118/kodi-advanced-proxy/releases).
 2. In Kodi: **Add-ons → Install from zip file** → pick the zip.
-3. Then **Install from repository → BigPing → Services → Advanced Proxy**.
+3. Then **Install from repository → RandomTask Repo → Services → Advanced Proxy**.
 
 **Manual install:**
 
@@ -116,9 +116,9 @@ Advanced Proxy — сервисный аддон Kodi, который запус
 
 **Из репозитория Kodi (рекомендуется — автообновления):**
 
-1. Скачайте `repository.bigping-<version>.zip` из [последнего релиза](https://github.com/maratdob118/kodi-advanced-proxy/releases).
+1. Скачайте `repository.maratdob118-<version>.zip` из [последнего релиза](https://github.com/maratdob118/kodi-advanced-proxy/releases).
 2. В Kodi: **Аддоны → Установить из zip-файла** → выберите zip.
-3. Затем: **Установить из репозитория → BigPing → Службы → Advanced Proxy**.
+3. Затем: **Установить из репозитория → RandomTask Repo → Службы → Advanced Proxy**.
 
 **Установка вручную:**
 
