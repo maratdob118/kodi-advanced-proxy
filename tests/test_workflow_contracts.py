@@ -116,7 +116,7 @@ class TestSourceWorkflow(unittest.TestCase):
             paths = on[event].get("paths")
             self.assertTrue(paths, "%s declares no path filter" % event)
             for required in ("build.sh", "scripts/**", "tests/**",
-                             "%s/**" % PAYLOAD):
+                             "%s/**" % PAYLOAD, "%s/**" % REPOSITORY):
                 self.assertIn(required, paths,
                               "%s filter misses %s" % (event, required))
 

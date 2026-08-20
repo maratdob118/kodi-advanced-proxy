@@ -7,7 +7,7 @@ on:
     branches: [main]
     paths:
       - "service.advancedproxy/**"
-      - "repository.bigping/**"
+      - "repository.maratdob118/**"
       - "bootstrap/**"
       - "scripts/**"
       - "tests/**"
@@ -19,7 +19,7 @@ on:
     branches: [main]
     paths:
       - "service.advancedproxy/**"
-      - "repository.bigping/**"
+      - "repository.maratdob118/**"
       - "bootstrap/**"
       - "scripts/**"
       - "tests/**"
