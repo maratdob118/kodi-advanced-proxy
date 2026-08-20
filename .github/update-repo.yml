@@ -42,11 +42,22 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Skip when this version is already published
+      - name: Check out current repository metadata
+        uses: actions/checkout@v5
+        with:
+          repository: maratdob118/kodi-advanced-proxy
+          ref: main
+          path: repository-source
+
+      - name: Skip when the payload and repository are already published
         id: skip
         run: |
-          if grep -q 'version="${{ steps.release.outputs.version }}"' \
-               zips/addons.xml; then
+          repository_version=$(grep -m1 -o 'version="[^"]*"' \
+            repository-source/repository.maratdob118/addon.xml)
+          if grep -q 'id="service.advancedproxy".*version="${{ steps.release.outputs.version }}"' \
+               zips/addons.xml && \
+             grep -q "$repository_version" \
+               zips/repository.maratdob118/addon.xml; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -80,7 +91,9 @@ jobs:
             --version "${{ steps.release.outputs.version }}" \
             --platforms linux_arm64,linux_armv7 \
             --output "payloads/repo-payload-${{ steps.release.outputs.version }}.zip"
-          python3 source/scripts/generate_repo.py \
+          rm -rf source/repository.maratdob118
+          cp -R repository-source/repository.maratdob118 source/repository.maratdob118
+          python3 repository-source/scripts/generate_repo.py \
             --repo source \
             --out generated \
             --payload "payloads/repo-payload-${{ steps.release.outputs.version }}.zip" \

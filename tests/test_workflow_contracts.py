@@ -237,13 +237,25 @@ class TestUpdateWorkflowTemplate(unittest.TestCase):
     def test_never_cancels_midway(self):
         self.assertIs(self.document["concurrency"]["cancel-in-progress"], False)
 
-    def test_skips_when_the_version_is_already_published(self):
+    def test_skips_when_the_payload_and_repository_are_already_published(self):
         skip_steps = [step for step in steps(self.job)
-                      if "already published" in step_name(step)]
+                       if "payload and repository" in step_name(step)]
         self.assertEqual(len(skip_steps), 1, "no skip step")
-        checkout = index_of(self.job, "actions/checkout")
-        self.assertLess(index_of(self.job, "resolve"),
-                        checkout, "skip must come before the source clone")
+        skip = skip_steps[0].get("run") or ""
+        self.assertIn('id="service.advancedproxy"', skip)
+        self.assertIn("repository.maratdob118/addon.xml", skip)
+
+    def test_checks_current_repository_metadata_before_the_skip(self):
+        source_checkout = next(step for step in steps(self.job)
+                               if step.get("with", {}).get("path")
+                               == "repository-source")
+        self.assertEqual(source_checkout["with"]["repository"], SOURCE_REPO)
+        self.assertEqual(source_checkout["with"]["ref"], "main")
+        metadata_position = steps(self.job).index(source_checkout)
+        skip_position = steps(self.job).index(next(
+            step for step in steps(self.job)
+            if "payload and repository" in step_name(step)))
+        self.assertLess(metadata_position, skip_position)
 
     def test_polls_the_source_repository_releases(self):
         self.assertIn(SOURCE_REPO, self.text)
@@ -262,7 +274,8 @@ class TestUpdateWorkflowTemplate(unittest.TestCase):
         run = "\n".join(step.get("run") or "" for step in steps(self.job))
         self.assertIn("make_universal.py", run)
         self.assertIn("--platforms", run)
-        self.assertIn("generate_repo.py", run)
+        self.assertIn("repository-source/scripts/generate_repo.py", run)
+        self.assertIn("cp -R repository-source/repository.maratdob118", run)
         self.assertIn("--payload", run)
         self.assertIn("--version", run)
 
