@@ -33,6 +33,7 @@ import xml.etree.ElementTree as ET
 
 PAYLOAD = "service.advancedproxy"
 REPOSITORY = "repository.maratdob118"
+REPOSITORY_ICON = os.path.join(REPOSITORY, "resources", "icon.png")
 ADDONS_XML = "zips/addons.xml"
 ADDONS_XML_MD5 = "zips/addons.xml.md5"
 README = "README.md"
@@ -122,8 +123,8 @@ def build_addons_xml(roots):
     return text.encode("utf-8")
 
 
-def pack_repository_zip(addon_xml_bytes, version):
-    """Pack the repository addon into a deterministic single-root ZIP."""
+def pack_repository_zip(addon_xml_bytes, icon_bytes, version):
+    """Pack the repository addon and its icon into a deterministic ZIP."""
     buffer = tempfile.SpooledTemporaryFile(max_size=1 << 20)
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         info = zipfile.ZipInfo("%s/addon.xml" % REPOSITORY,
@@ -131,6 +132,11 @@ def pack_repository_zip(addon_xml_bytes, version):
         info.create_system = 3
         info.external_attr = FILE_MODE << 16
         archive.writestr(info, addon_xml_bytes)
+        info = zipfile.ZipInfo("%s/resources/icon.png" % REPOSITORY,
+                               (1980, 1, 1, 0, 0, 0))
+        info.create_system = 3
+        info.external_attr = FILE_MODE << 16
+        archive.writestr(info, icon_bytes)
     buffer.seek(0)
     payload = buffer.read()
     buffer.close()
@@ -138,7 +144,7 @@ def pack_repository_zip(addon_xml_bytes, version):
 
 
 def build_readme(payload_version, repository_version):
-    return ("""# maratdob118 Kodi repository
+    return ("""# RandomTask Repo
 
 Generated tree. Do not edit by hand: every file here is produced by
 `scripts/generate_repo.py` in
@@ -150,7 +156,7 @@ and pushed by `scripts/publish_repo.py` on every release.
 1. Download `%(repository_path)s` from this repository
    (`https://raw.githubusercontent.com/maratdob118/kodi-addons/main/%(repository_path)s`).
 2. In Kodi: **Add-ons -> Install from zip file**, pick that ZIP.
-3. **Add-ons -> Install from repository -> maratdob118 Repository ->
+3. **Add-ons -> Install from repository -> RandomTask Repo ->
    Services -> Advanced Proxy**.
 
 Kodi 19 (Matrix) or newer is required. Updates arrive automatically once the
@@ -246,9 +252,12 @@ def generate(repo, out, payload_zip, version=None):
     """Build the whole tree in memory, then write it atomically."""
     payload_xml = os.path.join(repo, PAYLOAD, "addon.xml")
     repository_xml = os.path.join(repo, REPOSITORY, "addon.xml")
+    repository_icon = os.path.join(repo, REPOSITORY_ICON)
     payload_root, payload_version, _ = read_manifest(payload_xml, PAYLOAD)
     repository_root, repository_version, repository_raw = read_manifest(
         repository_xml, REPOSITORY)
+    with open(repository_icon, "rb") as stream:
+        repository_icon_raw = stream.read()
     if version and version != payload_version:
         raise GenerationError("%s says version %s, expected %s"
                               % (payload_xml, payload_version, version))
@@ -260,7 +269,8 @@ def generate(repo, out, payload_zip, version=None):
 
     addons_xml = build_addons_xml([payload_root, repository_root])
     md5 = hashlib.md5(addons_xml).hexdigest()
-    repository_zip = pack_repository_zip(repository_raw, repository_version)
+    repository_zip = pack_repository_zip(repository_raw, repository_icon_raw,
+                                         repository_version)
     files = {
         ADDONS_XML: addons_xml,
         ADDONS_XML_MD5: (md5 + "\n").encode("utf-8"),

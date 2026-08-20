@@ -52,7 +52,7 @@ BRANCH = "main"
 
 ADDONS_XML = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addons>
-<addon id="repository.maratdob118" name="maratdob118 Repository" version="1.0.0" provider-name="maratdob118" />
+<addon id="repository.maratdob118" name="RandomTask Repo" version="1.0.1" provider-name="RandomTask" />
 <addon id="service.advancedproxy" name="Advanced Proxy" version="%s" provider-name="advancedproxy" />
 </addons>
 """
@@ -68,12 +68,12 @@ def generated_files(version=VERSION):
     return {
         "zips/addons.xml": addons_xml,
         "zips/addons.xml.md5": (md5 + "\n").encode("utf-8"),
-        "README.md": b"# maratdob118 Kodi repository\n\nGenerated tree.\n",
+        "README.md": b"# RandomTask Repo\n\nGenerated tree.\n",
         "zips/%s/addon.xml" % PAYLOAD: addons_xml,
         "zips/%s/%s-%s.zip" % (PAYLOAD, PAYLOAD, version): PAYLOAD_ZIP,
         "zips/%s/addon.xml" % REPOSITORY: ("<addon id='%s' />" % REPOSITORY
                                            ).encode("utf-8"),
-        "zips/%s/%s-1.0.0.zip" % (REPOSITORY, REPOSITORY): REPOSITORY_ZIP,
+        "zips/%s/%s-1.0.1.zip" % (REPOSITORY, REPOSITORY): REPOSITORY_ZIP,
     }
 
 
