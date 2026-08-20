@@ -62,8 +62,9 @@ class RepositoryFixture:
         self.out = os.path.join(root, "out")
         os.makedirs(self.dist)
         for relative in (os.path.join(PAYLOAD, "addon.xml"),
-                         os.path.join(REPOSITORY, "addon.xml"),
-                         os.path.join("scripts", "generate_repo.py")):
+                          os.path.join(REPOSITORY, "addon.xml"),
+                          os.path.join(REPOSITORY, "resources", "icon.png"),
+                          os.path.join("scripts", "generate_repo.py")):
             target = os.path.join(self.repo, relative)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             shutil.copy2(os.path.join(REPO, relative), target)
@@ -204,6 +205,10 @@ class TestRepositoryAddonManifest(RepositoryTestCase):
         self.assertEqual(metadata.find("source").text,
                          "https://github.com/maratdob118/kodi-advanced-proxy")
 
+    def test_metadata_declares_a_packaged_icon(self):
+        metadata = self.extension("xbmc.addon.metadata")
+        self.assertEqual(metadata.find("icon").text, "resources/icon.png")
+
 
 class TestGeneratedTree(RepositoryTestCase):
     def test_generates_exactly_the_classic_tree(self):
@@ -229,15 +234,21 @@ class TestGeneratedTree(RepositoryTestCase):
                 "zips", PAYLOAD, "%s-%s.zip" % (PAYLOAD, VERSION))),
             expected)
 
-    def test_repository_zip_is_a_single_root_archive_of_the_manifest(self):
+    def test_repository_zip_contains_its_manifest_and_icon(self):
         self.generate_ok()
         path = self.fixture.generated(
             "zips", REPOSITORY, "%s-%s.zip" % (REPOSITORY, REPOSITORY_VERSION))
         with zipfile.ZipFile(path) as archive:
-            self.assertEqual(archive.namelist(), ["%s/addon.xml" % REPOSITORY])
+            self.assertEqual(archive.namelist(), [
+                "%s/addon.xml" % REPOSITORY,
+                "%s/resources/icon.png" % REPOSITORY,
+            ])
             manifest = ET.fromstring(archive.read("%s/addon.xml" % REPOSITORY))
+            icon = archive.read("%s/resources/icon.png" % REPOSITORY)
         self.assertEqual(manifest.get("id"), REPOSITORY)
         self.assertEqual(manifest.get("version"), REPOSITORY_VERSION)
+        self.assertEqual(icon, read_bytes(os.path.join(
+            REPO, REPOSITORY, "resources", "icon.png")))
 
     def test_versions_are_read_from_the_source_manifests(self):
         self.generate_ok()
