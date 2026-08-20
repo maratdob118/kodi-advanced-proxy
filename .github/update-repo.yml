@@ -52,7 +52,8 @@ jobs:
       - name: Skip when the payload and repository are already published
         id: skip
         run: |
-          repository_version=$(grep -m1 -o 'version="[^"]*"' \
+          repository_version=$(python3 -c \
+            'import sys, xml.etree.ElementTree as ET; print(ET.parse(sys.argv[1]).getroot().get("version"))' \
             repository-source/repository.maratdob118/addon.xml)
           if grep -q 'id="service.advancedproxy".*version="${{ steps.release.outputs.version }}"' \
                zips/addons.xml && \
