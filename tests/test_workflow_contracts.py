@@ -244,6 +244,7 @@ class TestUpdateWorkflowTemplate(unittest.TestCase):
         skip = skip_steps[0].get("run") or ""
         self.assertIn('id="service.advancedproxy"', skip)
         self.assertIn("repository.maratdob118/addon.xml", skip)
+        self.assertIn("ET.parse", skip)
 
     def test_checks_current_repository_metadata_before_the_skip(self):
         source_checkout = next(step for step in steps(self.job)
