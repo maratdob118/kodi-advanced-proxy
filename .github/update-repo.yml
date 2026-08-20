@@ -82,6 +82,7 @@ jobs:
             --repo maratdob118/kodi-advanced-proxy \
             --pattern "service.advancedproxy-${{ steps.release.outputs.version }}.linux_arm64.zip" \
             --pattern "service.advancedproxy-${{ steps.release.outputs.version }}.linux_armv7.zip" \
+            --clobber \
             --dir payloads
 
       - name: Assemble the repository payload and generate the tree
