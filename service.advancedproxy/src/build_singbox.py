@@ -7,6 +7,8 @@ Modes:
 Kodi-free.
 """
 
+import dns_utils
+
 
 def _tls(p):
     sec = p.get("security", "none")
@@ -173,33 +175,78 @@ def build_outbounds(profiles):
     return outbounds, tags, skipped
 
 
-def _dns_block(settings):
-    """Normalized DNS block: user server (udp/doh/dot) + duckdns local rule."""
+def _remote_dns_server(parsed, proxy_detour):
+    """Typed sing-box DNS server entry for a parsed udp/doh/dot setting.
+
+    Secure resolvers (DoH/DoT) dial through the proxy outbound when one
+    exists: the ISP then sees only encrypted DNS inside the tunnel, and a
+    resolver that substitutes DNS answers cannot poison the client's own
+    lookups, because the queries are authenticated TLS all the way to the
+    resolver - neither the ISP nor the tunnel endpoint can rewrite them.
+    """
+    if parsed["kind"] == "udp":
+        entry = {"type": "udp", "tag": "remote", "server": parsed["host"]}
+        if parsed.get("port", 53) != 53:
+            entry["server_port"] = parsed["port"]
+        return entry
+    if parsed["kind"] == "dot":
+        entry = {"type": "tls", "tag": "remote", "server": parsed["host"]}
+        if parsed.get("port", 853) != 853:
+            entry["server_port"] = parsed["port"]
+    else:
+        entry = {"type": "https", "tag": "remote", "server": parsed["host"],
+                 "path": parsed.get("path", "/dns-query")}
+    # detour only when there is a proxy outbound; the default (direct)
+    # detour must stay implicit - sing-box rejects an explicit detour to a
+    # bare direct outbound.
+    if proxy_detour:
+        entry["detour"] = "proxy"
+    # Hostname-based DoH/DoT servers need a bootstrap resolver: the router
+    # DNS answers that one lookup, everything else stays on secure DNS.
+    if not dns_utils.is_ipv4(parsed["host"]):
+        entry["domain_resolver"] = "bootstrap"
+    return entry
+
+
+def _dns_block(settings, proxy_detour=False):
+    """Normalized DNS block.
+
+    Layout (tags referenced by route rules / default_domain_resolver):
+      bootstrap - router DNS (DHCP answer), direct, resolves DoH/DoT
+                  hostnames and proxy server addresses
+      local     - router DNS, serves domains routed direct (e.g. duckdns)
+      remote    - the user's resolver (default: Cloudflare DoH); DoH/DoT
+                  entries dial through the proxy so DNS answers can be
+                  neither observed nor substituted on the path
+    """
     server = (settings.get("dns_server") or "").strip()
     strategy = (settings.get("dns_query_strategy") or "").strip()
-    if server:
-        # sing-box uses the first server as the implicit final resolver, so
-        # the user's server answers everything except the duckdns rule.
-        servers = [{"address": server}]
-        final = None
+    if "dns_bootstrap" in settings:
+        bootstrap = settings["dns_bootstrap"] or []
     else:
-        servers = [
-            {"type": "udp", "tag": "remote", "server": "1.1.1.1"},
-            {"type": "udp", "tag": "local", "server": "77.88.8.8"},
-        ]
-        final = "remote"
-    # The duckdns local rule needs a "local" entry in both shapes so
-    # route.default_domain_resolver stays valid.
-    if not any(s.get("tag") == "local" for s in servers):
-        servers.append({"type": "udp", "tag": "local", "server": "77.88.8.8"})
+        bootstrap = dns_utils.system_dns_servers()
+    router = bootstrap[0] if bootstrap else "77.88.8.8"
+
+    servers = [
+        {"type": "udp", "tag": "bootstrap", "server": router},
+        {"type": "udp", "tag": "local", "server": router},
+    ]
+    parsed = dns_utils.parse_dns_server(server)
+    if parsed is not None:
+        servers.append(_remote_dns_server(parsed, proxy_detour))
+    else:
+        servers.append({"type": "https", "tag": "remote",
+                        "server": "1.1.1.1", "path": "/dns-query"})
+        if proxy_detour:
+            servers[-1]["detour"] = "proxy"
+
     block = {
         "servers": servers,
         "rules": [{"domain_suffix": [".duckdns.org"], "server": "local"}],
+        "final": "remote",
+        "strategy": strategy or "prefer_ipv4",
+        "independent_cache": True,
     }
-    if strategy:
-        block["strategy"] = strategy
-    if final:
-        block["final"] = final
     return block
 
 
@@ -259,7 +306,7 @@ def build_config(profiles, settings, active_tag=None):
 
     return {
         "log": log_cfg,
-        "dns": _dns_block(settings),
+        "dns": _dns_block(settings, proxy_detour=(final == "proxy")),
         "inbounds": inbounds,
         "outbounds": (outbounds + [chooser] if chooser else []) + [
             {"type": "direct", "tag": "direct"}],
@@ -267,6 +314,8 @@ def build_config(profiles, settings, active_tag=None):
             "rules": rules,
             "final": final,
             "auto_detect_interface": True,
-            "default_domain_resolver": "local",
+            # Proxy server addresses resolve through the router DNS: they
+            # must work before any secure resolver is reachable.
+            "default_domain_resolver": "bootstrap",
         },
     }, skipped

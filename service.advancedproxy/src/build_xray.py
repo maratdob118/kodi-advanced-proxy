@@ -12,6 +12,8 @@ Kodi-free.
 
 import os
 
+import dns_utils
+
 _ENGINE_UNSUPPORTED = {"tuic"}
 
 
@@ -148,16 +150,51 @@ def build_outbounds(profiles):
 
 
 def _dns_block(settings):
-    """Normalized DNS server list + queryStrategy for Xray."""
+    """Normalized DNS server list + queryStrategy for Xray.
+
+    Remote (non-local) DNS servers are dispatched through Xray's routing
+    engine, so the DoH/DoT entry travels inside the tunnel: DNS answers can
+    be neither observed nor substituted on the path, even when the remote
+    server itself performs DNS substitution for other traffic. The router
+    DNS (the DHCP answer) stays as the last fallback and pins hostname-based
+    DoH/DoT servers through `hosts`, resolved at config build time.
+    """
     server = (settings.get("dns_server") or "").strip()
-    if server:
-        if server.startswith("tls://"):
-            servers = ["tcp+tls://%s:853" % server[len("tls://"):]]
-        else:
-            servers = [server]
+    if "dns_bootstrap" in settings:
+        bootstrap = settings["dns_bootstrap"] or []
     else:
-        servers = ["1.1.1.1", "77.88.8.8", "localhost"]
+        bootstrap = dns_utils.system_dns_servers()
+    parsed = dns_utils.parse_dns_server(server)
+    servers = []
+    hosts = {}
+    if parsed is None:
+        servers.append({"address": "https://1.1.1.1/dns-query"})
+    elif parsed["kind"] == "doh":
+        servers.append({"address": "https://%s%s"
+                        % (parsed["host"], parsed.get("path", "/dns-query"))})
+        if not dns_utils.is_ipv4(parsed["host"]):
+            ips = dns_utils.resolve_hostname(parsed["host"])
+            if ips:
+                hosts[parsed["host"]] = ips
+    elif parsed["kind"] == "dot":
+        address = "tls://%s" % parsed["host"]
+        if parsed.get("port", 853) != 853:
+            address = "%s:%d" % (address, parsed["port"])
+        servers.append({"address": address})
+        if not dns_utils.is_ipv4(parsed["host"]):
+            ips = dns_utils.resolve_hostname(parsed["host"])
+            if ips:
+                hosts[parsed["host"]] = ips
+    else:
+        entry = {"address": parsed["host"]}
+        if parsed.get("port", 53) != 53:
+            entry["port"] = parsed["port"]
+        servers.append(entry)
+    for ip in bootstrap:
+        servers.append({"address": ip})
     block = {"servers": servers}
+    if hosts:
+        block["hosts"] = hosts
     strategy = (settings.get("dns_query_strategy") or "").strip()
     mapping = {
         "prefer_ipv4": "UseIPv4",
@@ -229,21 +266,25 @@ def build_config(profiles, settings, active_tag=None):
     config = {
         "log": {"loglevel": settings.get("log_level", "info").replace("warn", "warning")},
         "dns": _dns_block(settings),
+        # Xray cannot multiplex SOCKS and HTTP on one listener: with both
+        # bound to the same port, one inbound silently starves the other.
+        # HTTP sits on the configured port (Kodi's proxy points there) and
+        # SOCKS takes the next port; the supervisor reserves both.
         "inbounds": [
-            {
-                "tag": "mixed-in",
-                "listen": "127.0.0.1",
-                "port": int(settings.get("local_port", 1080)),
-                "protocol": "socks",
-                "settings": {"auth": "noauth", "udp": True},
-                "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
-            },
             {
                 "tag": "http-in",
                 "listen": "127.0.0.1",
                 "port": int(settings.get("local_port", 1080)),
                 "protocol": "http",
                 "settings": {},
+            },
+            {
+                "tag": "socks-in",
+                "listen": "127.0.0.1",
+                "port": int(settings.get("local_port", 1080)) + 1,
+                "protocol": "socks",
+                "settings": {"auth": "noauth", "udp": True},
+                "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
             },
         ],
         "outbounds": outbounds + [

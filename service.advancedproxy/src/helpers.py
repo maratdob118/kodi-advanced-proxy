@@ -11,6 +11,8 @@ import threading
 import time
 import urllib.parse
 
+import dns_utils
+
 ADDON_ID = "service.advancedproxy"
 
 _DEFAULTS = {
@@ -29,6 +31,7 @@ _DEFAULTS = {
     "disable_proto_trojan": "false",
     "disable_proto_hysteria2": "false",
     "dns_server": "",
+    "dns_preset": "0",
     "dns_query_strategy": "",
     "direct_torrent": "false",
     "geoip_url": "https://github.com/runetfreedom/russia-blocked-geoip/releases/latest/download/geoip.dat",
@@ -73,6 +76,14 @@ def get_settings(reader=None):
         except (TypeError, ValueError):
             return int(_DEFAULTS[key])
 
+    # DNS preset resolves to a server string; "custom" keeps the free-form
+    # dns_server field. An install that only has a hand-entered dns_server
+    # (predating presets) is treated as "custom" so it is not overridden.
+    preset_id = dns_utils.preset_id_by_index(s("dns_preset"))
+    if "dns_preset" not in raw and raw.get("dns_server"):
+        preset_id = dns_utils.CUSTOM_PRESET
+    dns_server = dns_utils.preset_server(preset_id, s("dns_server"))
+
     return {
         "engine": _ENGINES.get(str(s("engine")), "sing-box"),
         "autostart": b("autostart"),
@@ -88,7 +99,8 @@ def get_settings(reader=None):
         "disable_proto_vless": b("disable_proto_vless"),
         "disable_proto_trojan": b("disable_proto_trojan"),
         "disable_proto_hysteria2": b("disable_proto_hysteria2"),
-        "dns_server": s("dns_server"),
+        "dns_server": dns_server,
+        "dns_preset": preset_id,
         "dns_query_strategy": _DNS_STRATEGIES.get(str(s("dns_query_strategy")),
                                                   s("dns_query_strategy")),
         "direct_torrent": b("direct_torrent"),
@@ -102,23 +114,9 @@ def get_settings(reader=None):
 
 
 def parse_dns_server(value):
-    """Normalize a DNS server setting into (kind, host, port).
-
-    Plain IP -> udp; https:// URL -> doh; tls://host -> dot. Returns None
-    for empty or unrecognized values.
-    """
-    value = (value or "").strip()
-    if not value:
-        return None
-    if value.startswith("https://"):
-        host = value[len("https://"):].split("/")[0]
-        return {"kind": "doh", "host": host, "port": 443}
-    if value.startswith("tls://"):
-        host = value[len("tls://"):]
-        return {"kind": "dot", "host": host, "port": 853}
-    if all(c.isdigit() or c == "." for c in value) and value.count(".") == 3:
-        return {"kind": "udp", "host": value, "port": 53}
-    return None
+    """Normalize a DNS server setting. Delegates to dns_utils (kept for
+    backward-compatible imports)."""
+    return dns_utils.parse_dns_server(value)
 
 
 def disabled_protocols(reader=None):

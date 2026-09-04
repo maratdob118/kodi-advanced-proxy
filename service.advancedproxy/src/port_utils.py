@@ -44,3 +44,17 @@ def find_free_port(preferred, host=DEFAULT_HOST, max_attempts=MAX_ATTEMPTS):
         if not port_in_use(port, host):
             return port
     return preferred
+
+
+def find_free_port_pair(preferred, host=DEFAULT_HOST,
+                        max_attempts=MAX_ATTEMPTS):
+    """Return the first PORT with both PORT and PORT+1 free.
+
+    Xray cannot multiplex SOCKS and HTTP on one listener, so its config
+    uses two consecutive ports; both must be free before the engine starts.
+    """
+    top = min(preferred + max_attempts, 65535)
+    for port in range(preferred, top):
+        if not port_in_use(port, host) and not port_in_use(port + 1, host):
+            return port
+    return preferred

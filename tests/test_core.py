@@ -120,6 +120,7 @@ sys.path.insert(0, os.path.abspath(SRC))
 import binary_manager  # noqa: E402
 import build_singbox  # noqa: E402
 import build_xray  # noqa: E402
+import dns_utils  # noqa: E402
 import helpers  # noqa: E402
 import osarch  # noqa: E402
 import parsers  # noqa: E402
@@ -428,7 +429,9 @@ class TestBuildXray(unittest.TestCase):
         profs, _ = parsers.parse_lines([VLESS])
         cfg, _ = build_xray.build_config(profs, self._settings())
         socks = [i for i in cfg["inbounds"] if i["protocol"] == "socks"][0]
-        self.assertEqual(socks["port"], 1080)
+        # Xray cannot multiplex SOCKS and HTTP on one port: SOCKS moves to
+        # local_port + 1, HTTP keeps the configured port.
+        self.assertEqual(socks["port"], 1081)
 
     def test_http_inbound_serves_kodi_http_proxy(self):
         profs, _ = parsers.parse_lines([VLESS])
@@ -468,8 +471,48 @@ class TestBuildXray(unittest.TestCase):
     def test_dns_udp_server(self):
         profs, _ = parsers.parse_lines([VLESS])
         cfg, _ = build_xray.build_config(
-            profs, self._settings(dns_server="8.8.8.8"))
-        self.assertIn("8.8.8.8", cfg["dns"]["servers"])
+            profs, self._settings(dns_server="8.8.8.8",
+                                  dns_bootstrap=["192.168.1.1"]))
+        addresses = [s["address"] for s in cfg["dns"]["servers"]]
+        self.assertEqual(addresses[0], "8.8.8.8")
+        self.assertIn("192.168.1.1", addresses)
+
+    def test_dns_doh_via_proxy_routing(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(
+            profs, self._settings(dns_server="https://1.1.1.1/dns-query",
+                                  dns_bootstrap=["192.168.1.1"]))
+        self.assertEqual(cfg["dns"]["servers"][0]["address"],
+                         "https://1.1.1.1/dns-query")
+        self.assertNotIn("hosts", cfg["dns"],
+                         "IP-literal DoH needs no hosts pinning")
+
+    def test_dns_doh_hostname_pinned_via_hosts(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        with patch.object(dns_utils, "resolve_hostname",
+                          return_value=["94.140.14.14"]) as resolve:
+            cfg, _ = build_xray.build_config(
+                profs, self._settings(
+                    dns_server="https://dns.adguard-dns.com/dns-query",
+                    dns_bootstrap=["192.168.1.1"]))
+        resolve.assert_called_once_with("dns.adguard-dns.com")
+        self.assertEqual(cfg["dns"]["hosts"]["dns.adguard-dns.com"],
+                         ["94.140.14.14"])
+
+    def test_dns_dot(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(
+            profs, self._settings(dns_server="tls://1.1.1.1",
+                                  dns_bootstrap=["192.168.1.1"]))
+        self.assertEqual(cfg["dns"]["servers"][0]["address"], "tls://1.1.1.1")
+
+    def test_dns_default_is_doh_with_router_fallback(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(
+            profs, self._settings(dns_bootstrap=["192.168.1.1"]))
+        addresses = [s["address"] for s in cfg["dns"]["servers"]]
+        self.assertEqual(addresses,
+                         ["https://1.1.1.1/dns-query", "192.168.1.1"])
 
     def test_geoip_rule_absent_when_db_missing(self):
         # A rule referencing a missing geoip.dat makes Xray refuse the whole
@@ -494,6 +537,172 @@ class TestBuildXray(unittest.TestCase):
                              os.path.join(work, "geoip.dat"))
             self.assertEqual(s["geo_paths"]["geosite"],
                              os.path.join(work, "geosite.dat"))
+
+
+class TestDnsUtils(unittest.TestCase):
+    def test_parse_udp(self):
+        self.assertEqual(dns_utils.parse_dns_server("8.8.8.8"),
+                         {"kind": "udp", "host": "8.8.8.8", "port": 53})
+        self.assertEqual(dns_utils.parse_dns_server("udp://1.1.1.1:5353"),
+                         {"kind": "udp", "host": "1.1.1.1", "port": 5353})
+
+    def test_parse_doh_keeps_path(self):
+        parsed = dns_utils.parse_dns_server("https://dns.google/dns-query")
+        self.assertEqual(parsed, {"kind": "doh", "host": "dns.google",
+                                  "port": 443, "path": "/dns-query"})
+        parsed = dns_utils.parse_dns_server("https://1.1.1.1")
+        self.assertEqual(parsed["path"], "/dns-query")
+
+    def test_parse_dot(self):
+        self.assertEqual(dns_utils.parse_dns_server("tls://1.1.1.1"),
+                         {"kind": "dot", "host": "1.1.1.1", "port": 853})
+        self.assertEqual(dns_utils.parse_dns_server("tls://dns.quad9.net:8853"),
+                         {"kind": "dot", "host": "dns.quad9.net", "port": 8853})
+
+    def test_parse_rejects_garbage(self):
+        for bad in ("", "  ", "example.com", "https://", "tls://",
+                    "1.1.1.1:abc", "http://1.1.1.1/dns-query"):
+            with self.subTest(bad=bad):
+                self.assertIsNone(dns_utils.parse_dns_server(bad))
+
+    def test_system_dns_servers_skips_loopback(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".conf",
+                                         delete=False) as f:
+            f.write("# comment\nnameserver 127.0.0.53\n"
+                    "nameserver 192.168.1.1\nnameserver fe80::1%eth0\n"
+                    "nameserver 192.168.1.1\n; another comment\n"
+                    "nameserver 10.0.0.1 ; trailing\n")
+            path = f.name
+        try:
+            self.assertEqual(dns_utils.system_dns_servers(path),
+                             ["192.168.1.1", "10.0.0.1"])
+        finally:
+            os.unlink(path)
+
+    def test_system_dns_servers_missing_file(self):
+        self.assertEqual(dns_utils.system_dns_servers("/nonexistent/x"), [])
+
+    def test_presets(self):
+        self.assertEqual(dns_utils.preset_server("cloudflare-doh"),
+                         "https://1.1.1.1/dns-query")
+        self.assertEqual(dns_utils.preset_server("auto"), "")
+        self.assertEqual(dns_utils.preset_server("custom", "tls://x"),
+                         "tls://x")
+        self.assertEqual(dns_utils.preset_server("unknown", ""), "")
+        self.assertEqual(dns_utils.preset_id_by_index(0), "auto")
+        self.assertEqual(
+            dns_utils.preset_id_by_index(len(dns_utils.DNS_PRESETS) - 1),
+            "custom")
+        self.assertEqual(dns_utils.preset_id_by_index("bogus"), "auto")
+        for i, (name, _) in enumerate(dns_utils.DNS_PRESETS):
+            self.assertEqual(dns_utils.preset_index_by_id(name), i)
+            self.assertEqual(dns_utils.preset_id_by_index(i), name)
+
+    def test_resolve_hostname_ipv4_passthrough(self):
+        self.assertEqual(dns_utils.resolve_hostname("1.2.3.4"), ["1.2.3.4"])
+
+
+class TestSingboxDns(unittest.TestCase):
+    def _settings(self, **kw):
+        s = {"local_port": 1080, "mode": "urltest", "urltest_interval": "3m",
+             "urltest_tolerance": 50, "interrupt_connections": True,
+             "test_url": "https://x/204", "log_level": "info",
+             "dns_bootstrap": ["192.168.1.1"]}
+        s.update(kw)
+        return s
+
+    def _dns(self, settings, profiles=None):
+        if profiles is None:
+            profiles, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_singbox.build_config(profiles, settings)
+        return cfg
+
+    def _by_tag(self, cfg, tag):
+        return [s for s in cfg["dns"]["servers"] if s.get("tag") == tag][0]
+
+    def test_bootstrap_and_local_use_router_dns(self):
+        cfg = self._dns(self._settings())
+        self.assertEqual(self._by_tag(cfg, "bootstrap")["server"],
+                         "192.168.1.1")
+        self.assertEqual(self._by_tag(cfg, "local")["server"], "192.168.1.1")
+        self.assertEqual(cfg["route"]["default_domain_resolver"], "bootstrap")
+
+    def test_bootstrap_fallback_without_resolv_conf(self):
+        cfg = self._dns(self._settings(dns_bootstrap=[]))
+        self.assertEqual(self._by_tag(cfg, "bootstrap")["server"],
+                         "77.88.8.8")
+
+    def test_default_remote_is_doh(self):
+        cfg = self._dns(self._settings())
+        remote = self._by_tag(cfg, "remote")
+        self.assertEqual(remote["type"], "https")
+        self.assertEqual(remote["server"], "1.1.1.1")
+        self.assertEqual(remote["detour"], "proxy")
+        self.assertEqual(cfg["dns"]["final"], "remote")
+
+    def test_doh_detour_direct_in_direct_mode(self):
+        cfg = self._dns(self._settings(mode="direct"))
+        self.assertNotIn("detour", self._by_tag(cfg, "remote"),
+                         "no proxy outbound -> implicit direct detour")
+
+    def test_custom_doh_hostname_gets_domain_resolver(self):
+        cfg = self._dns(self._settings(
+            dns_server="https://dns.adguard-dns.com/dns-query"))
+        remote = self._by_tag(cfg, "remote")
+        self.assertEqual(remote["type"], "https")
+        self.assertEqual(remote["server"], "dns.adguard-dns.com")
+        self.assertEqual(remote["path"], "/dns-query")
+        self.assertEqual(remote["domain_resolver"], "bootstrap")
+        self.assertEqual(remote["detour"], "proxy")
+
+    def test_custom_dot(self):
+        cfg = self._dns(self._settings(dns_server="tls://dns.quad9.net"))
+        remote = self._by_tag(cfg, "remote")
+        self.assertEqual(remote["type"], "tls")
+        self.assertEqual(remote["server"], "dns.quad9.net")
+        self.assertEqual(remote["domain_resolver"], "bootstrap")
+
+    def test_custom_udp(self):
+        cfg = self._dns(self._settings(dns_server="9.9.9.9"))
+        remote = self._by_tag(cfg, "remote")
+        self.assertEqual(remote["type"], "udp")
+        self.assertEqual(remote["server"], "9.9.9.9")
+        self.assertNotIn("detour", remote)
+
+    def test_duckdns_rule_stays_local(self):
+        cfg = self._dns(self._settings())
+        self.assertEqual(cfg["dns"]["rules"],
+                         [{"domain_suffix": [".duckdns.org"],
+                           "server": "local"}])
+
+
+class TestHelpersDns(unittest.TestCase):
+    def test_preset_resolves_server(self):
+        raw = {"dns_preset": "1"}  # cloudflare-doh
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["dns_server"], "https://1.1.1.1/dns-query")
+        self.assertEqual(s["dns_preset"], "cloudflare-doh")
+
+    def test_auto_preset_clears_server(self):
+        raw = {"dns_preset": "0", "dns_server": "8.8.8.8"}
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["dns_server"], "")
+
+    def test_custom_preset_keeps_freeform_server(self):
+        raw = {"dns_preset": str(len(dns_utils.DNS_PRESETS) - 1),
+               "dns_server": "tls://my-dns.example"}
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["dns_server"], "tls://my-dns.example")
+
+    def test_legacy_dns_server_without_preset_is_custom(self):
+        raw = {"dns_server": "8.8.8.8"}  # predates dns_preset
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["dns_preset"], "custom")
+        self.assertEqual(s["dns_server"], "8.8.8.8")
+
+    def test_parse_dns_server_delegates(self):
+        self.assertEqual(helpers.parse_dns_server("tls://1.1.1.1"),
+                         {"kind": "dot", "host": "1.1.1.1", "port": 853})
 
 
 class TestHelpers(unittest.TestCase):

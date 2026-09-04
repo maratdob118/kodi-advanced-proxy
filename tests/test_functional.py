@@ -158,7 +158,8 @@ class TestEngineProxyTraffic(unittest.TestCase):
 
     def test_xray_serves_socks_and_http(self):
         runner, port = self._run("xray")
-        self.assertEqual(proxy_get(port, "socks5h", PROBE), "204")
+        # Xray: HTTP on the configured port, SOCKS on the next one.
+        self.assertEqual(proxy_get(port + 1, "socks5h", PROBE), "204")
         self.assertEqual(proxy_get(port, "http", PROBE), "204")
 
     def test_direct_mode_without_profiles_reaches_the_network(self):

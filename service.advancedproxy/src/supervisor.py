@@ -69,7 +69,13 @@ class ProxySupervisor(object):
         pointing at it) and only re-evaluated when the setting changes.
         """
         preferred = int(self.settings.get("local_port", 1080))
-        port = port_utils.find_free_port(preferred)
+        if self.settings.get("engine") == "xray":
+            # Xray serves HTTP on the effective port and SOCKS on the next
+            # one (it cannot multiplex both on a single listener), so the
+            # pair must be free.
+            port = port_utils.find_free_port_pair(preferred)
+        else:
+            port = port_utils.find_free_port(preferred)
         self.effective_port = port
         if port != preferred:
             self.log("port %d is busy, using %d instead"
