@@ -11,6 +11,8 @@ import threading
 import time
 import urllib.parse
 
+import dns_utils
+
 ADDON_ID = "service.advancedproxy"
 
 _DEFAULTS = {
@@ -29,7 +31,10 @@ _DEFAULTS = {
     "disable_proto_trojan": "false",
     "disable_proto_hysteria2": "false",
     "dns_server": "",
+    "dns_preset": "0",
     "dns_query_strategy": "",
+    "health_check": "true",
+    "health_interval": "30",
     "direct_torrent": "false",
     "geoip_url": "https://github.com/runetfreedom/russia-blocked-geoip/releases/latest/download/geoip.dat",
     "geosite_url": "",
@@ -51,7 +56,25 @@ _DNS_STRATEGIES = {
 def _read_kodi_settings():
     import xbmcaddon
     addon = xbmcaddon.Addon(ADDON_ID)
-    return {k: addon.getSetting(k) for k in _DEFAULTS}
+    raw = {k: addon.getSetting(k) for k in _DEFAULTS}
+    # getSetting() returns the settings.xml default ("0") for a setting the
+    # user never touched, so an untouched dns_preset is indistinguishable
+    # from an explicit "Auto". Look at the persisted settings file: if
+    # dns_preset was never written, mark it empty so the legacy fallback
+    # (hand-entered dns_server -> Custom preset) can kick in.
+    if raw.get("dns_server") and not _setting_persisted("dns_preset"):
+        raw["dns_preset"] = ""
+    return raw
+
+
+def _setting_persisted(setting_id):
+    """True when SETTING_ID exists in the user's addon settings file."""
+    try:
+        path = os.path.join(profile_dir(), "settings.xml")
+        with open(path, "rb") as f:
+            return ('id="%s"' % setting_id).encode("utf-8") in f.read()
+    except OSError:
+        return False
 
 
 def get_settings(reader=None):
@@ -73,6 +96,14 @@ def get_settings(reader=None):
         except (TypeError, ValueError):
             return int(_DEFAULTS[key])
 
+    # DNS preset resolves to a server string; "custom" keeps the free-form
+    # dns_server field. An install that only has a hand-entered dns_server
+    # (predating presets) is treated as "custom" so it is not overridden.
+    preset_id = dns_utils.preset_id_by_index(s("dns_preset"))
+    if not str(raw.get("dns_preset") or "").strip() and raw.get("dns_server"):
+        preset_id = dns_utils.CUSTOM_PRESET
+    dns_server = dns_utils.preset_server(preset_id, s("dns_server"))
+
     return {
         "engine": _ENGINES.get(str(s("engine")), "sing-box"),
         "autostart": b("autostart"),
@@ -88,9 +119,12 @@ def get_settings(reader=None):
         "disable_proto_vless": b("disable_proto_vless"),
         "disable_proto_trojan": b("disable_proto_trojan"),
         "disable_proto_hysteria2": b("disable_proto_hysteria2"),
-        "dns_server": s("dns_server"),
+        "dns_server": dns_server,
+        "dns_preset": preset_id,
         "dns_query_strategy": _DNS_STRATEGIES.get(str(s("dns_query_strategy")),
                                                   s("dns_query_strategy")),
+        "health_check": b("health_check"),
+        "health_interval": i("health_interval"),
         "direct_torrent": b("direct_torrent"),
         "geoip_url": s("geoip_url"),
         "geosite_url": s("geosite_url"),
@@ -102,23 +136,9 @@ def get_settings(reader=None):
 
 
 def parse_dns_server(value):
-    """Normalize a DNS server setting into (kind, host, port).
-
-    Plain IP -> udp; https:// URL -> doh; tls://host -> dot. Returns None
-    for empty or unrecognized values.
-    """
-    value = (value or "").strip()
-    if not value:
-        return None
-    if value.startswith("https://"):
-        host = value[len("https://"):].split("/")[0]
-        return {"kind": "doh", "host": host, "port": 443}
-    if value.startswith("tls://"):
-        host = value[len("tls://"):]
-        return {"kind": "dot", "host": host, "port": 853}
-    if all(c.isdigit() or c == "." for c in value) and value.count(".") == 3:
-        return {"kind": "udp", "host": value, "port": 53}
-    return None
+    """Normalize a DNS server setting. Delegates to dns_utils (kept for
+    backward-compatible imports)."""
+    return dns_utils.parse_dns_server(value)
 
 
 def disabled_protocols(reader=None):
@@ -369,33 +389,49 @@ def build_directory_entries(store, mode, base_url, latencies=None,
         entries.append({"kind": "info",
                         "str_id": 32208,
                         "url": base_url + "?action=add"})
-    for p in store.profiles:
+
+    def profile_entry(p, grouped=False):
         tag_q = urllib.parse.urlencode({"tag": p["tag"]})
-        entries.append({
+        return {
             "kind": "profile",
             "tag": p["tag"],
             "protocol": p["protocol"],
             "enabled": p.get("enabled", True),
             "is_active": p["tag"] == store.active_tag,
+            "grouped": grouped,
             "latency_ms": latencies.get(p["tag"]) if p.get("enabled", True) else None,
             "click_url": base_url + "?action=activate&" + tag_q,
             "toggle_url": base_url + "?action=toggle&" + tag_q,
             "remove_url": base_url + "?action=remove&" + tag_q,
             "copy_url": base_url + "?action=copy&" + tag_q,
-        })
+        }
+
+    # Subscriptions are section headers: each group opens with its header
+    # (click = refresh) followed by the profiles that belong to it, so
+    # several subscriptions can coexist without merging into one list.
+    grouped_ids = set()
     for group in subscriptions or ():
         id_q = urllib.parse.urlencode({"id": group["id"]})
         status = ("error: %s" % group["last_error"]) if group.get("last_error") \
             else ("updated" if group.get("last_updated") else "never")
+        members = [p for p in store.profiles
+                   if p.get("subscription") == group["id"]]
+        grouped_ids.add(group["id"])
         entries.append({
             "kind": "subscription",
             "id": group["id"],
             "url": group["url"],
             "status": status,
+            "count": len(members),
             "click_url": base_url + "?action=sub_refresh&" + id_q,
             "refresh_url": base_url + "?action=sub_refresh&" + id_q,
             "remove_url": base_url + "?action=sub_remove&" + id_q,
         })
+        for p in members:
+            entries.append(profile_entry(p, grouped=True))
+    for p in store.profiles:
+        if p.get("subscription") not in grouped_ids:
+            entries.append(profile_entry(p))
     entries.append({"kind": "action", "action": "add", "str_id": 32200,
                     "url": base_url + "?action=add"})
     entries.append({"kind": "action", "action": "test", "str_id": 32202,

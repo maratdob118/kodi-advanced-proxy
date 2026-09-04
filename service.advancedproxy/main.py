@@ -184,7 +184,9 @@ def main():
         if sup.start():
             started = True
             _xbmc_log("proxy autostarted: %s on 127.0.0.1:%s (%s)"
-                      % (sup.bin.engine, settings["local_port"], settings["mode"]))
+                      % (sup.bin.engine,
+                         sup.effective_port or settings["local_port"],
+                         settings["mode"]))
         else:
             _xbmc_log("autostart failed: %s" % sup.last_error, "error")
     elif not sup.store.enabled():

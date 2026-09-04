@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import shutil
 import unittest
 from unittest.mock import patch
 
@@ -120,6 +121,8 @@ sys.path.insert(0, os.path.abspath(SRC))
 import binary_manager  # noqa: E402
 import build_singbox  # noqa: E402
 import build_xray  # noqa: E402
+import dns_utils  # noqa: E402
+import health  # noqa: E402
 import helpers  # noqa: E402
 import osarch  # noqa: E402
 import parsers  # noqa: E402
@@ -428,7 +431,9 @@ class TestBuildXray(unittest.TestCase):
         profs, _ = parsers.parse_lines([VLESS])
         cfg, _ = build_xray.build_config(profs, self._settings())
         socks = [i for i in cfg["inbounds"] if i["protocol"] == "socks"][0]
-        self.assertEqual(socks["port"], 1080)
+        # Xray cannot multiplex SOCKS and HTTP on one port: SOCKS moves to
+        # local_port + 1, HTTP keeps the configured port.
+        self.assertEqual(socks["port"], 1081)
 
     def test_http_inbound_serves_kodi_http_proxy(self):
         profs, _ = parsers.parse_lines([VLESS])
@@ -468,8 +473,48 @@ class TestBuildXray(unittest.TestCase):
     def test_dns_udp_server(self):
         profs, _ = parsers.parse_lines([VLESS])
         cfg, _ = build_xray.build_config(
-            profs, self._settings(dns_server="8.8.8.8"))
-        self.assertIn("8.8.8.8", cfg["dns"]["servers"])
+            profs, self._settings(dns_server="8.8.8.8",
+                                  dns_bootstrap=["192.168.1.1"]))
+        addresses = [s["address"] for s in cfg["dns"]["servers"]]
+        self.assertEqual(addresses[0], "8.8.8.8")
+        self.assertIn("192.168.1.1", addresses)
+
+    def test_dns_doh_via_proxy_routing(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(
+            profs, self._settings(dns_server="https://1.1.1.1/dns-query",
+                                  dns_bootstrap=["192.168.1.1"]))
+        self.assertEqual(cfg["dns"]["servers"][0]["address"],
+                         "https://1.1.1.1/dns-query")
+        self.assertNotIn("hosts", cfg["dns"],
+                         "IP-literal DoH needs no hosts pinning")
+
+    def test_dns_doh_hostname_pinned_via_hosts(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        with patch.object(dns_utils, "resolve_hostname",
+                          return_value=["94.140.14.14"]) as resolve:
+            cfg, _ = build_xray.build_config(
+                profs, self._settings(
+                    dns_server="https://dns.adguard-dns.com/dns-query",
+                    dns_bootstrap=["192.168.1.1"]))
+        resolve.assert_called_once_with("dns.adguard-dns.com")
+        self.assertEqual(cfg["dns"]["hosts"]["dns.adguard-dns.com"],
+                         ["94.140.14.14"])
+
+    def test_dns_dot(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(
+            profs, self._settings(dns_server="tls://1.1.1.1",
+                                  dns_bootstrap=["192.168.1.1"]))
+        self.assertEqual(cfg["dns"]["servers"][0]["address"], "tls://1.1.1.1")
+
+    def test_dns_default_is_doh_with_router_fallback(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_xray.build_config(
+            profs, self._settings(dns_bootstrap=["192.168.1.1"]))
+        addresses = [s["address"] for s in cfg["dns"]["servers"]]
+        self.assertEqual(addresses,
+                         ["https://1.1.1.1/dns-query", "192.168.1.1"])
 
     def test_geoip_rule_absent_when_db_missing(self):
         # A rule referencing a missing geoip.dat makes Xray refuse the whole
@@ -494,6 +539,495 @@ class TestBuildXray(unittest.TestCase):
                              os.path.join(work, "geoip.dat"))
             self.assertEqual(s["geo_paths"]["geosite"],
                              os.path.join(work, "geosite.dat"))
+
+
+class TestDnsUtils(unittest.TestCase):
+    def test_parse_udp(self):
+        self.assertEqual(dns_utils.parse_dns_server("8.8.8.8"),
+                         {"kind": "udp", "host": "8.8.8.8", "port": 53})
+        self.assertEqual(dns_utils.parse_dns_server("udp://1.1.1.1:5353"),
+                         {"kind": "udp", "host": "1.1.1.1", "port": 5353})
+
+    def test_parse_doh_keeps_path(self):
+        parsed = dns_utils.parse_dns_server("https://dns.google/dns-query")
+        self.assertEqual(parsed, {"kind": "doh", "host": "dns.google",
+                                  "port": 443, "path": "/dns-query"})
+        parsed = dns_utils.parse_dns_server("https://1.1.1.1")
+        self.assertEqual(parsed["path"], "/dns-query")
+
+    def test_parse_dot(self):
+        self.assertEqual(dns_utils.parse_dns_server("tls://1.1.1.1"),
+                         {"kind": "dot", "host": "1.1.1.1", "port": 853})
+        self.assertEqual(dns_utils.parse_dns_server("tls://dns.quad9.net:8853"),
+                         {"kind": "dot", "host": "dns.quad9.net", "port": 8853})
+
+    def test_parse_rejects_garbage(self):
+        for bad in ("", "  ", "example.com", "https://", "tls://",
+                    "1.1.1.1:abc", "http://1.1.1.1/dns-query"):
+            with self.subTest(bad=bad):
+                self.assertIsNone(dns_utils.parse_dns_server(bad))
+
+    def test_system_dns_servers_skips_loopback(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".conf",
+                                         delete=False) as f:
+            f.write("# comment\nnameserver 127.0.0.53\n"
+                    "nameserver 192.168.1.1\nnameserver fe80::1%eth0\n"
+                    "nameserver 192.168.1.1\n; another comment\n"
+                    "nameserver 10.0.0.1 ; trailing\n")
+            path = f.name
+        try:
+            self.assertEqual(dns_utils.system_dns_servers(path),
+                             ["192.168.1.1", "10.0.0.1"])
+        finally:
+            os.unlink(path)
+
+    def test_system_dns_servers_missing_file(self):
+        self.assertEqual(dns_utils.system_dns_servers("/nonexistent/x"), [])
+
+    def test_presets(self):
+        self.assertEqual(dns_utils.preset_server("cloudflare-doh"),
+                         "https://1.1.1.1/dns-query")
+        self.assertEqual(dns_utils.preset_server("auto"), "")
+        self.assertEqual(dns_utils.preset_server("custom", "tls://x"),
+                         "tls://x")
+        self.assertEqual(dns_utils.preset_server("unknown", ""), "")
+        self.assertEqual(dns_utils.preset_id_by_index(0), "auto")
+        self.assertEqual(
+            dns_utils.preset_id_by_index(len(dns_utils.DNS_PRESETS) - 1),
+            "custom")
+        self.assertEqual(dns_utils.preset_id_by_index("bogus"), "auto")
+        for i, (name, _) in enumerate(dns_utils.DNS_PRESETS):
+            self.assertEqual(dns_utils.preset_index_by_id(name), i)
+            self.assertEqual(dns_utils.preset_id_by_index(i), name)
+
+    def test_resolve_hostname_ipv4_passthrough(self):
+        self.assertEqual(dns_utils.resolve_hostname("1.2.3.4"), ["1.2.3.4"])
+
+
+class TestSingboxDns(unittest.TestCase):
+    def _settings(self, **kw):
+        s = {"local_port": 1080, "mode": "urltest", "urltest_interval": "3m",
+             "urltest_tolerance": 50, "interrupt_connections": True,
+             "test_url": "https://x/204", "log_level": "info",
+             "dns_bootstrap": ["192.168.1.1"]}
+        s.update(kw)
+        return s
+
+    def _dns(self, settings, profiles=None):
+        if profiles is None:
+            profiles, _ = parsers.parse_lines([VLESS])
+        cfg, _ = build_singbox.build_config(profiles, settings)
+        return cfg
+
+    def _by_tag(self, cfg, tag):
+        return [s for s in cfg["dns"]["servers"] if s.get("tag") == tag][0]
+
+    def test_bootstrap_and_local_use_router_dns(self):
+        cfg = self._dns(self._settings())
+        self.assertEqual(self._by_tag(cfg, "bootstrap")["server"],
+                         "192.168.1.1")
+        self.assertEqual(self._by_tag(cfg, "local")["server"], "192.168.1.1")
+        self.assertEqual(cfg["route"]["default_domain_resolver"], "bootstrap")
+
+    def test_bootstrap_fallback_without_resolv_conf(self):
+        cfg = self._dns(self._settings(dns_bootstrap=[]))
+        self.assertEqual(self._by_tag(cfg, "bootstrap")["server"],
+                         "77.88.8.8")
+
+    def test_default_remote_is_doh(self):
+        cfg = self._dns(self._settings())
+        remote = self._by_tag(cfg, "remote")
+        self.assertEqual(remote["type"], "https")
+        self.assertEqual(remote["server"], "1.1.1.1")
+        self.assertEqual(remote["detour"], "proxy")
+        self.assertEqual(cfg["dns"]["final"], "remote")
+
+    def test_doh_detour_direct_in_direct_mode(self):
+        cfg = self._dns(self._settings(mode="direct"))
+        self.assertNotIn("detour", self._by_tag(cfg, "remote"),
+                         "no proxy outbound -> implicit direct detour")
+
+    def test_custom_doh_hostname_gets_domain_resolver(self):
+        cfg = self._dns(self._settings(
+            dns_server="https://dns.adguard-dns.com/dns-query"))
+        remote = self._by_tag(cfg, "remote")
+        self.assertEqual(remote["type"], "https")
+        self.assertEqual(remote["server"], "dns.adguard-dns.com")
+        self.assertEqual(remote["path"], "/dns-query")
+        self.assertEqual(remote["domain_resolver"], "bootstrap")
+        self.assertEqual(remote["detour"], "proxy")
+
+    def test_custom_dot(self):
+        cfg = self._dns(self._settings(dns_server="tls://dns.quad9.net"))
+        remote = self._by_tag(cfg, "remote")
+        self.assertEqual(remote["type"], "tls")
+        self.assertEqual(remote["server"], "dns.quad9.net")
+        self.assertEqual(remote["domain_resolver"], "bootstrap")
+
+    def test_custom_udp(self):
+        cfg = self._dns(self._settings(dns_server="9.9.9.9"))
+        remote = self._by_tag(cfg, "remote")
+        self.assertEqual(remote["type"], "udp")
+        self.assertEqual(remote["server"], "9.9.9.9")
+        self.assertNotIn("detour", remote)
+
+    def test_duckdns_rule_stays_local(self):
+        cfg = self._dns(self._settings())
+        self.assertEqual(cfg["dns"]["rules"],
+                         [{"domain_suffix": [".duckdns.org"],
+                           "server": "local"}])
+
+
+class TestHelpersDns(unittest.TestCase):
+    def test_preset_resolves_server(self):
+        raw = {"dns_preset": "1"}  # cloudflare-doh
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["dns_server"], "https://1.1.1.1/dns-query")
+        self.assertEqual(s["dns_preset"], "cloudflare-doh")
+
+    def test_auto_preset_clears_server(self):
+        raw = {"dns_preset": "0", "dns_server": "8.8.8.8"}
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["dns_server"], "")
+
+    def test_custom_preset_keeps_freeform_server(self):
+        raw = {"dns_preset": str(len(dns_utils.DNS_PRESETS) - 1),
+               "dns_server": "tls://my-dns.example"}
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["dns_server"], "tls://my-dns.example")
+
+    def test_legacy_dns_server_without_preset_is_custom(self):
+        raw = {"dns_server": "8.8.8.8"}  # predates dns_preset
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["dns_preset"], "custom")
+        self.assertEqual(s["dns_server"], "8.8.8.8")
+
+    def test_untouched_preset_with_custom_server_stays_custom(self):
+        # Kodi returns "" or the default "0" for an unset setting depending
+        # on the reader; _read_kodi_settings marks untouched as "". Either
+        # way a hand-entered server must not be discarded.
+        raw = {"dns_preset": "", "dns_server": "8.8.8.8"}
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["dns_preset"], "custom")
+        self.assertEqual(s["dns_server"], "8.8.8.8")
+
+    def test_explicit_auto_preset_wins_over_stale_server(self):
+        raw = {"dns_preset": "0", "dns_server": "8.8.8.8"}
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["dns_preset"], "auto")
+        self.assertEqual(s["dns_server"], "")
+
+    def test_parse_dns_server_delegates(self):
+        self.assertEqual(helpers.parse_dns_server("tls://1.1.1.1"),
+                         {"kind": "dot", "host": "1.1.1.1", "port": 853})
+
+
+class TestDirectoryGrouping(unittest.TestCase):
+    """Subscription groups render as header + their profiles."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.store = profiles.ProfileStore(os.path.join(self.tmp, "p.json"))
+
+    def _build(self, subs):
+        return helpers.build_directory_entries(
+            self.store, "urltest", "plugin://service.advancedproxy/",
+            subscriptions=subs)
+
+    def _kinds(self, entries):
+        return [e["kind"] for e in entries]
+
+    def test_headers_precede_their_profiles(self):
+        self.store.add_subscription_profiles(
+            parsers.parse_lines([VLESS, HY2])[0], "sub-aaa")
+        self.store.add_subscription_profiles(
+            parsers.parse_lines([TROJAN])[0], "sub-bbb")
+        subs = [{"id": "sub-aaa", "url": "https://a/sub", "last_updated": 1},
+                {"id": "sub-bbb", "url": "https://b/sub", "last_updated": 1}]
+        entries = self._build(subs)
+        tags = [e.get("tag", e.get("id")) for e in entries
+                if e["kind"] in ("profile", "subscription")]
+        self.assertEqual(tags, ["sub-aaa", "AUTO:VLESS", "AUTO:Hysteria2",
+                                "sub-bbb", "AUTO:Trojan"])
+
+    def test_ungrouped_profiles_come_after_groups(self):
+        self.store.add_uri(VLESS)  # manual, no subscription
+        self.store.add_subscription_profiles(
+            parsers.parse_lines([TROJAN])[0], "sub-bbb")
+        subs = [{"id": "sub-bbb", "url": "https://b/sub", "last_updated": 1}]
+        entries = self._build(subs)
+        tags = [e.get("tag", e.get("id")) for e in entries
+                if e["kind"] in ("profile", "subscription")]
+        self.assertEqual(tags, ["sub-bbb", "AUTO:Trojan", "AUTO:VLESS"])
+        grouped = {e["tag"]: e["grouped"] for e in entries
+                   if e["kind"] == "profile"}
+        self.assertEqual(grouped, {"AUTO:Trojan": True, "AUTO:VLESS": False})
+
+    def test_header_click_refreshes_and_counts_profiles(self):
+        self.store.add_subscription_profiles(
+            parsers.parse_lines([VLESS, HY2])[0], "sub-aaa")
+        subs = [{"id": "sub-aaa", "url": "https://a/sub", "last_updated": 1}]
+        entries = self._build(subs)
+        header = [e for e in entries if e["kind"] == "subscription"][0]
+        self.assertEqual(header["count"], 2)
+        self.assertIn("action=sub_refresh", header["click_url"])
+        self.assertIn("id=sub-aaa", header["click_url"])
+
+    def test_empty_subscription_still_shows_header(self):
+        subs = [{"id": "sub-aaa", "url": "https://a/sub",
+                 "last_error": "boom"}]
+        entries = self._build(subs)
+        header = [e for e in entries if e["kind"] == "subscription"][0]
+        self.assertEqual(header["status"], "error: boom")
+        self.assertEqual(header["count"], 0)
+
+
+class _FakeGroupControl(object):
+    """In-memory urltest group: `working` holds outbound tags that pass."""
+
+    def __init__(self, members, working=()):
+        self._members = list(members)
+        self.working = set(working)
+        self.now = self._members[0] if self._members else None
+        self.selections = []
+
+    def current(self):
+        return self.now
+
+    def effective(self):
+        return self.now
+
+    def members(self):
+        return list(self._members)
+
+    def select(self, tag):
+        self.now = tag
+        self.selections.append(tag)
+        return True
+
+
+class TestHealthMonitor(unittest.TestCase):
+    def _monitor(self, control=None, working=True, **kw):
+        notes = []
+        logs = []
+        args = dict(
+            port=1080, test_url="https://x/204", control=control,
+            notify=lambda msg, error=False: notes.append((msg, error)),
+            logger=lambda msg, level="info": logs.append((level, msg)),
+            interval=30, fail_threshold=2, sleeper=lambda s: None)
+        args.update(kw)
+        mon = health.HealthMonitor(**args)
+        ctl = control
+
+        def fetch(url, port):
+            if ctl is not None and hasattr(ctl, "now"):
+                return ctl.now in ctl.working
+            return working
+
+        mon.fetch = fetch
+        return mon, notes
+
+    def test_healthy_no_notifications(self):
+        mon, notes = self._monitor()
+        self.assertTrue(mon.check())
+        self.assertEqual(notes, [])
+        self.assertFalse(mon._down)
+
+    def test_single_failure_below_threshold_stays_quiet(self):
+        mon, notes = self._monitor(working=False)
+        self.assertFalse(mon.check())
+        self.assertEqual(notes, [])
+        self.assertFalse(mon._down)
+
+    def test_sustained_failure_notifies_outage_and_failover(self):
+        ctl = _FakeGroupControl(["A", "B", "C"], working={"B"})
+        mon, notes = self._monitor(control=ctl)
+        mon.check()
+        mon.check()  # threshold reached -> failover walks A(dead) B(alive)
+        self.assertEqual(ctl.now, "B")
+        self.assertIn(("No internet via proxy, switching...", True), notes)
+        self.assertIn(("Switched: A -> B", False), notes)
+        self.assertFalse(mon._down)
+
+    def test_all_dead_restores_original_and_reports(self):
+        ctl = _FakeGroupControl(["A", "B"], working=set())
+        mon, notes = self._monitor(control=ctl)
+        mon.check()
+        mon.check()
+        self.assertEqual(ctl.now, "A", "original selection must be restored")
+        self.assertIn(("All proxy servers unreachable", True), notes)
+        self.assertTrue(mon._down)
+
+    def test_recovery_notifies(self):
+        ctl = _FakeGroupControl(["A"], working=set())
+        mon, notes = self._monitor(control=ctl)
+        mon.check()
+        mon.check()
+        self.assertTrue(mon._down)
+        ctl.working.add("A")
+        mon.check()
+        self.assertIn(("Proxy connectivity restored", False), notes)
+        self.assertFalse(mon._down)
+
+    def test_engine_side_switch_is_reported(self):
+        ctl = _FakeGroupControl(["A", "B"], working={"A", "B"})
+        mon, notes = self._monitor(control=ctl)
+        mon.check()  # learns current = A
+        ctl.now = "B"  # engine urltest switched on its own
+        mon.check()
+        self.assertIn(("Auto-switch: A -> B", False), notes)
+
+    def test_restart_control_used_when_no_group(self):
+        calls = []
+        ctl = health.RestartControl(lambda: calls.append("restart"))
+        mon, notes = self._monitor(control=ctl, working=False)
+        mon.check()
+        mon.check()
+        self.assertEqual(calls, ["restart"])
+        self.assertIn(("All proxy servers unreachable", True), notes)
+
+    def test_tick_respects_interval(self):
+        mon, _ = self._monitor()
+        self.assertTrue(mon.tick(now=1000))
+        self.assertIsNone(mon.tick(now=1010))
+        self.assertTrue(mon.tick(now=1031))
+
+    def test_fallback_urls_tried(self):
+        seen = []
+        mon, _ = self._monitor()
+        mon.fetch = lambda url, port: seen.append(url) or \
+            url == health.FALLBACK_URLS[0]
+        self.assertTrue(mon.check())
+        self.assertEqual(seen[0], "https://x/204")
+        self.assertEqual(seen[1], health.FALLBACK_URLS[0])
+
+    def test_auto_failover_disabled_keeps_selection(self):
+        ctl = _FakeGroupControl(["A", "B"], working={"B"})
+        mon, notes = self._monitor(control=ctl, auto_failover=False)
+        mon.check()
+        mon.check()
+        self.assertEqual(ctl.now, "A")
+        self.assertIn(("No internet via proxy, switching...", True), notes)
+
+
+class TestClashGroupControl(unittest.TestCase):
+    def _opener(self, payload, put_status=204):
+        class _Resp(object):
+            status = put_status
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps(payload).encode("utf-8")
+
+        class _Opener(object):
+            def __init__(self):
+                self.requests = []
+
+            def open(self, request, timeout=5):
+                url = getattr(request, "full_url", request)
+                self.requests.append(url)
+                return _Resp()
+
+        return _Opener()
+
+    def test_current_and_members(self):
+        opener = self._opener({"now": "B", "all": ["A", "B"]})
+        ctl = health.ClashGroupControl(9091, opener=opener)
+        self.assertEqual(ctl.current(), "B")
+        self.assertEqual(ctl.members(), ["A", "B"])
+
+    def test_select_puts_name(self):
+        opener = self._opener({})
+        ctl = health.ClashGroupControl(9091, opener=opener)
+        self.assertTrue(ctl.select("B"))
+        self.assertIn("/proxies/proxy", opener.requests[0])
+
+    def test_api_down_returns_none_not_exception(self):
+        class _Broken(object):
+            def open(self, request, timeout=5):
+                raise OSError("connection refused")
+
+        ctl = health.ClashGroupControl(9091, opener=_Broken())
+        self.assertIsNone(ctl.current())
+        self.assertEqual(ctl.members(), [])
+        self.assertFalse(ctl.select("A"))
+
+
+class TestSupervisorHealthWiring(unittest.TestCase):
+    def _supervisor(self, tmp, **settings):
+        base = {"local_port": 1080, "mode": "urltest", "engine": "sing-box",
+                "test_url": "https://x/204"}
+        base.update(settings)
+        return supervisor.ProxySupervisor(settings=base, addon_dir=tmp,
+                                          work_dir=tmp)
+
+    def test_monitor_created_for_urltest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp)
+            sup.effective_port = 1080
+            sup.clash_port = 1180
+            mon = sup._make_health_monitor()
+            self.assertIsNotNone(mon)
+            self.assertIsInstance(mon.control, health.ClashGroupControl)
+            self.assertTrue(mon.auto_failover)
+
+    def test_monitor_none_in_direct_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp, mode="direct")
+            self.assertIsNone(sup._make_health_monitor())
+
+    def test_monitor_none_when_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp, health_check=False)
+            self.assertIsNone(sup._make_health_monitor())
+
+    def test_xray_gets_restart_control_without_group_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp, engine="xray")
+            sup.effective_port = 1080
+            mon = sup._make_health_monitor()
+            self.assertIsInstance(mon.control, health.RestartControl)
+            self.assertTrue(mon.auto_failover)
+
+    def test_manual_mode_no_auto_failover(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp, mode="manual")
+            sup.effective_port = 1080
+            sup.clash_port = 1180
+            mon = sup._make_health_monitor()
+            self.assertFalse(mon.auto_failover)
+
+    def test_clash_port_reserved_for_singbox(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp)
+            sup._resolve_effective_port()
+            self.assertIsNotNone(sup.clash_port)
+            self.assertGreater(sup.clash_port, sup.effective_port)
+            s = sup._build_settings()
+            self.assertEqual(s["clash_api_port"], sup.clash_port)
+
+    def test_clash_api_block_in_config(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        s = {"local_port": 1080, "mode": "urltest", "urltest_interval": "3m",
+             "urltest_tolerance": 50, "test_url": "https://x/204",
+             "log_level": "info", "clash_api_port": 1180,
+             "dns_bootstrap": ["192.168.1.1"]}
+        cfg, _ = build_singbox.build_config(profs, s)
+        api = cfg["experimental"]["clash_api"]
+        self.assertEqual(api["external_controller"], "127.0.0.1:1180")
+
+    def test_no_clash_api_in_direct_mode(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        s = {"local_port": 1080, "mode": "direct", "log_level": "info",
+             "clash_api_port": 1180, "dns_bootstrap": ["192.168.1.1"]}
+        cfg, _ = build_singbox.build_config(profs, s)
+        self.assertNotIn("experimental", cfg)
 
 
 class TestHelpers(unittest.TestCase):
@@ -574,6 +1108,102 @@ class TestHelpers(unittest.TestCase):
 
 
 class TestBinaryManager(unittest.TestCase):
+    def _orphan(self, bm):
+        """Spawn a real process whose cmdline contains bm.work_binary."""
+        os.makedirs(bm.work_dir_bin, exist_ok=True)
+        with open(bm.work_binary, "w") as f:
+            f.write("#!/bin/sh\nsleep 300\n")
+        os.chmod(bm.work_binary, 0o755)
+        # Detach stdio: the script's `sleep` child would otherwise inherit
+        # the test runner's stdout and hold the pipe open for 300s.
+        return subprocess.Popen([bm.work_binary], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "needs /proc")
+    def test_kill_stale_terminates_orphan_process(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(
+                addon, work, platform_override="linux_x64")
+            orphan = self._orphan(bm)
+            try:
+                self.assertIn(orphan.pid, bm._stale_pids())
+                self.assertEqual(bm.kill_stale(), 1)
+                orphan.wait(timeout=10)
+            finally:
+                if orphan.poll() is None:
+                    orphan.kill()
+                    orphan.wait(timeout=5)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "needs /proc")
+    def test_kill_stale_via_pidfile_and_removes_it(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(
+                addon, work, platform_override="linux_x64")
+            orphan = self._orphan(bm)
+            try:
+                with open(bm.pidfile, "w") as f:
+                    f.write(str(orphan.pid))
+                self.assertIn(orphan.pid, bm._stale_pids())
+                self.assertEqual(bm.kill_stale(), 1)
+                orphan.wait(timeout=10)
+                self.assertFalse(os.path.exists(bm.pidfile))
+            finally:
+                if orphan.poll() is None:
+                    orphan.kill()
+                    orphan.wait(timeout=5)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "needs /proc")
+    def test_supervised_process_is_never_stale(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(
+                addon, work, platform_override="linux_x64")
+            orphan = self._orphan(bm)
+            try:
+                bm.proc = orphan  # currently supervised: hands off
+                self.assertNotIn(orphan.pid, bm._stale_pids())
+            finally:
+                bm.proc = None
+                orphan.kill()
+                orphan.wait(timeout=5)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "needs /proc")
+    def test_foreign_processes_untouched(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(
+                addon, work, platform_override="linux_x64")
+            other = subprocess.Popen(["sleep", "300"], stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+            try:
+                self.assertEqual(bm._stale_pids(), [])
+                self.assertEqual(bm.kill_stale(), 0)
+                self.assertIsNone(other.poll())
+            finally:
+                other.kill()
+                other.wait(timeout=5)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "needs /proc")
+    def test_kill_stale_covers_the_other_engine(self):
+        """After an engine switch the orphan is the PREVIOUS engine's
+        process; the new manager must still find and kill it."""
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(
+                addon, work, engine="sing-box", platform_override="linux_x64")
+            other_path = os.path.join(work, "bin", "xray", "linux_x64", "xray")
+            os.makedirs(os.path.dirname(other_path))
+            with open(other_path, "w") as f:
+                f.write("#!/bin/sh\nsleep 300\n")
+            os.chmod(other_path, 0o755)
+            orphan = subprocess.Popen([other_path], stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL)
+            try:
+                self.assertIn(orphan.pid, bm._stale_pids())
+                self.assertEqual(bm.kill_stale(), 1)
+                orphan.wait(timeout=10)
+            finally:
+                if orphan.poll() is None:
+                    orphan.kill()
+                    orphan.wait(timeout=5)
+
     def test_paths(self):
         with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
             bm = binary_manager.BinaryManager(addon, work, platform_override="linux_x64")
@@ -710,6 +1340,10 @@ class _FakeBin(object):
 
     def check(self, config_path):
         return True, ""
+
+    def kill_stale(self):
+        self._calls.append(("kill_stale", self.name))
+        return 0
 
 
 class TestSupervisorReconfigureEngine(unittest.TestCase):
@@ -1760,6 +2394,10 @@ class _FakeBinaryManager(object):
 
     def check(self, config_path):
         return True, ""
+
+    def kill_stale(self):
+        self.calls.append(("kill_stale",))
+        return 0
 
     def crash(self, code=1):
         self.proc.exit(code)

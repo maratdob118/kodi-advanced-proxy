@@ -93,6 +93,24 @@
                     <default>true</default>
                     <control type="toggle"/>
                 </setting>
+                <setting id="health_check" type="boolean" label="32270" help="32270">
+                    <level>0</level>
+                    <default>true</default>
+                    <control type="toggle"/>
+                </setting>
+                <setting id="health_interval" type="integer" label="32271" help="32271">
+                    <level>1</level>
+                    <default>30</default>
+                    <constraints>
+                        <minimum>10</minimum>
+                        <step>10</step>
+                        <maximum>600</maximum>
+                    </constraints>
+                    <control type="slider" format="integer">
+                        <popup>true</popup>
+                        <heading>32271</heading>
+                    </control>
+                </setting>
             </group>
 
             <group id="3" label="32004">
@@ -202,12 +220,43 @@
                         <heading>32234</heading>
                     </control>
                 </setting>
+                <setting id="dns_preset" type="integer" label="32252" help="32252">
+                    <level>0</level>
+                    <default>0</default>
+                    <constraints>
+                        <options>
+                            <option label="32253">0</option>
+                            <option label="32254">1</option>
+                            <option label="32255">2</option>
+                            <option label="32256">3</option>
+                            <option label="32257">4</option>
+                            <option label="32258">5</option>
+                            <option label="32259">6</option>
+                            <option label="32260">7</option>
+                            <option label="32261">8</option>
+                            <option label="32262">9</option>
+                            <option label="32263">10</option>
+                            <option label="32264">11</option>
+                            <option label="32265">12</option>
+                            <option label="32266">13</option>
+                            <option label="32267">14</option>
+                            <option label="32268">15</option>
+                            <option label="32269">16</option>
+                        </options>
+                    </constraints>
+                    <control type="list" format="string">
+                        <heading>32252</heading>
+                    </control>
+                </setting>
                 <setting id="dns_server" type="string" label="32241" help="32241">
                     <level>0</level>
                     <default></default>
                     <constraints>
                         <allowempty>true</allowempty>
                     </constraints>
+                    <dependencies>
+                        <dependency type="visible" setting="dns_preset" operator="is">16</dependency>
+                    </dependencies>
                     <control type="edit" format="string">
                         <heading>32241</heading>
                     </control>

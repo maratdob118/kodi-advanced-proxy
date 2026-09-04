@@ -7,6 +7,8 @@ Modes:
 Kodi-free.
 """
 
+import dns_utils
+
 
 def _tls(p):
     sec = p.get("security", "none")
@@ -157,6 +159,23 @@ def _outbound(p):
     return None
 
 
+def _duration_seconds(value, default=180):
+    """Parse sing-box duration strings like "3m"/"30s"/"1h" into seconds."""
+    try:
+        text = str(value).strip()
+        if text.endswith("ms"):
+            return max(1, int(text[:-2]) // 1000)
+        if text.endswith("m"):
+            return int(text[:-1]) * 60
+        if text.endswith("s"):
+            return int(text[:-1])
+        if text.endswith("h"):
+            return int(text[:-1]) * 3600
+        return int(text)
+    except (TypeError, ValueError):
+        return default
+
+
 def build_outbounds(profiles):
     """Return (outbounds, tags, skipped) for enabled neutral profiles."""
     outbounds, tags, skipped = [], [], []
@@ -173,33 +192,78 @@ def build_outbounds(profiles):
     return outbounds, tags, skipped
 
 
-def _dns_block(settings):
-    """Normalized DNS block: user server (udp/doh/dot) + duckdns local rule."""
+def _remote_dns_server(parsed, proxy_detour):
+    """Typed sing-box DNS server entry for a parsed udp/doh/dot setting.
+
+    Secure resolvers (DoH/DoT) dial through the proxy outbound when one
+    exists: the ISP then sees only encrypted DNS inside the tunnel, and a
+    resolver that substitutes DNS answers cannot poison the client's own
+    lookups, because the queries are authenticated TLS all the way to the
+    resolver - neither the ISP nor the tunnel endpoint can rewrite them.
+    """
+    if parsed["kind"] == "udp":
+        entry = {"type": "udp", "tag": "remote", "server": parsed["host"]}
+        if parsed.get("port", 53) != 53:
+            entry["server_port"] = parsed["port"]
+        return entry
+    if parsed["kind"] == "dot":
+        entry = {"type": "tls", "tag": "remote", "server": parsed["host"]}
+        if parsed.get("port", 853) != 853:
+            entry["server_port"] = parsed["port"]
+    else:
+        entry = {"type": "https", "tag": "remote", "server": parsed["host"],
+                 "path": parsed.get("path", "/dns-query")}
+    # detour only when there is a proxy outbound; the default (direct)
+    # detour must stay implicit - sing-box rejects an explicit detour to a
+    # bare direct outbound.
+    if proxy_detour:
+        entry["detour"] = "proxy"
+    # Hostname-based DoH/DoT servers need a bootstrap resolver: the router
+    # DNS answers that one lookup, everything else stays on secure DNS.
+    if not dns_utils.is_ipv4(parsed["host"]):
+        entry["domain_resolver"] = "bootstrap"
+    return entry
+
+
+def _dns_block(settings, proxy_detour=False):
+    """Normalized DNS block.
+
+    Layout (tags referenced by route rules / default_domain_resolver):
+      bootstrap - router DNS (DHCP answer), direct, resolves DoH/DoT
+                  hostnames and proxy server addresses
+      local     - router DNS, serves domains routed direct (e.g. duckdns)
+      remote    - the user's resolver (default: Cloudflare DoH); DoH/DoT
+                  entries dial through the proxy so DNS answers can be
+                  neither observed nor substituted on the path
+    """
     server = (settings.get("dns_server") or "").strip()
     strategy = (settings.get("dns_query_strategy") or "").strip()
-    if server:
-        # sing-box uses the first server as the implicit final resolver, so
-        # the user's server answers everything except the duckdns rule.
-        servers = [{"address": server}]
-        final = None
+    if "dns_bootstrap" in settings:
+        bootstrap = settings["dns_bootstrap"] or []
     else:
-        servers = [
-            {"type": "udp", "tag": "remote", "server": "1.1.1.1"},
-            {"type": "udp", "tag": "local", "server": "77.88.8.8"},
-        ]
-        final = "remote"
-    # The duckdns local rule needs a "local" entry in both shapes so
-    # route.default_domain_resolver stays valid.
-    if not any(s.get("tag") == "local" for s in servers):
-        servers.append({"type": "udp", "tag": "local", "server": "77.88.8.8"})
+        bootstrap = dns_utils.system_dns_servers()
+    router = bootstrap[0] if bootstrap else "77.88.8.8"
+
+    servers = [
+        {"type": "udp", "tag": "bootstrap", "server": router},
+        {"type": "udp", "tag": "local", "server": router},
+    ]
+    parsed = dns_utils.parse_dns_server(server)
+    if parsed is not None:
+        servers.append(_remote_dns_server(parsed, proxy_detour))
+    else:
+        servers.append({"type": "https", "tag": "remote",
+                        "server": "1.1.1.1", "path": "/dns-query"})
+        if proxy_detour:
+            servers[-1]["detour"] = "proxy"
+
     block = {
         "servers": servers,
         "rules": [{"domain_suffix": [".duckdns.org"], "server": "local"}],
+        "final": "remote",
+        "strategy": strategy or "prefer_ipv4",
+        "independent_cache": True,
     }
-    if strategy:
-        block["strategy"] = strategy
-    if final:
-        block["final"] = final
     return block
 
 
@@ -207,6 +271,7 @@ def build_config(profiles, settings, active_tag=None):
     outbounds, tags, skipped = build_outbounds(profiles)
 
     mode = settings.get("mode", "urltest")
+    extra_chooser = None
     if mode == "direct":
         chooser = None
         final = "direct"
@@ -221,16 +286,33 @@ def build_config(profiles, settings, active_tag=None):
                 "interrupt_exist_connections": bool(settings.get("interrupt_connections", True)),
             }
         else:
-            chooser = {
+            interval = settings.get("urltest_interval", "3m")
+            # sing-box requires interval <= idle_timeout; a long user
+            # interval must stretch the idle timeout instead of failing.
+            idle = max(300, 2 * _duration_seconds(interval))
+            # The Clash API cannot force-select inside a urltest group, so
+            # the urltest sits behind a thin selector: normally the selector
+            # points at "proxy-auto" and urltest does its job, and the
+            # health monitor can pin a specific node via the selector when
+            # the automatic choice stalls.
+            urltest = {
                 "type": "urltest",
-                "tag": "proxy",
+                "tag": "proxy-auto",
                 "outbounds": tags,
                 "url": settings.get("test_url", "https://www.gstatic.com/generate_204"),
-                "interval": settings.get("urltest_interval", "3m"),
+                "interval": interval,
                 "tolerance": int(settings.get("urltest_tolerance", 50)),
-                "idle_timeout": "5m",
+                "idle_timeout": "%ds" % idle,
                 "interrupt_exist_connections": False,
             }
+            chooser = {
+                "type": "selector",
+                "tag": "proxy",
+                "outbounds": ["proxy-auto"] + tags,
+                "default": "proxy-auto",
+                "interrupt_exist_connections": False,
+            }
+            extra_chooser = urltest
         final = "proxy"
     else:
         chooser = None
@@ -257,16 +339,33 @@ def build_config(profiles, settings, active_tag=None):
     rules.append({"ip_is_private": True, "action": "route",
                   "outbound": "direct"})
 
-    return {
+    chain = ([extra_chooser, chooser] if extra_chooser else
+             ([chooser] if chooser else []))
+    # Node outbounds only ship with a chooser; direct mode drops them.
+    outbounds_all = (outbounds + chain) if chooser else []
+
+    config = {
         "log": log_cfg,
-        "dns": _dns_block(settings),
+        "dns": _dns_block(settings, proxy_detour=(final == "proxy")),
         "inbounds": inbounds,
-        "outbounds": (outbounds + [chooser] if chooser else []) + [
+        "outbounds": outbounds_all + [
             {"type": "direct", "tag": "direct"}],
         "route": {
             "rules": rules,
             "final": final,
             "auto_detect_interface": True,
-            "default_domain_resolver": "local",
+            # Proxy server addresses resolve through the router DNS: they
+            # must work before any secure resolver is reachable.
+            "default_domain_resolver": "bootstrap",
         },
-    }, skipped
+    }
+    # Clash API lets the supervisor's health monitor see and steer the
+    # urltest/selector group when the engine's own probing stalls.
+    if chooser is not None and settings.get("clash_api_port"):
+        config["experimental"] = {
+            "clash_api": {
+                "external_controller": "127.0.0.1:%d"
+                                       % int(settings["clash_api_port"]),
+            },
+        }
+    return config, skipped

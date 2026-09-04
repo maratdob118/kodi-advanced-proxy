@@ -12,6 +12,7 @@ import time
 import binary_manager
 import build_singbox
 import build_xray
+import health
 import port_utils
 import profiles
 
@@ -44,6 +45,8 @@ class ProxySupervisor(object):
         self._was_running = False
         self._last_active_tag = None
         self.effective_port = None
+        self.clash_port = None
+        self.health = None
         self._shutting_down = False
         self._refreshing_subscriptions = False
         self.refresh_subscriptions = None  # injectable; real default set lazily
@@ -69,8 +72,18 @@ class ProxySupervisor(object):
         pointing at it) and only re-evaluated when the setting changes.
         """
         preferred = int(self.settings.get("local_port", 1080))
-        port = port_utils.find_free_port(preferred)
+        if self.settings.get("engine") == "xray":
+            # Xray serves HTTP on the effective port and SOCKS on the next
+            # one (it cannot multiplex both on a single listener), so the
+            # pair must be free.
+            port = port_utils.find_free_port_pair(preferred)
+        else:
+            port = port_utils.find_free_port(preferred)
         self.effective_port = port
+        self.clash_port = None
+        if (self.settings.get("engine", "sing-box") == "sing-box"
+                and self.settings.get("mode") != "direct"):
+            self.clash_port = port_utils.find_free_port(port + 100)
         if port != preferred:
             self.log("port %d is busy, using %d instead"
                      % (preferred, port), "warn")
@@ -83,9 +96,37 @@ class ProxySupervisor(object):
         s = dict(self.settings)
         if self.effective_port:
             s["local_port"] = self.effective_port
+        if self.clash_port:
+            s["clash_api_port"] = self.clash_port
         s["geo_paths"] = {"geoip": os.path.join(self.work_dir, "geoip.dat"),
                           "geosite": os.path.join(self.work_dir, "geosite.dat")}
         return s
+
+    def _make_health_monitor(self):
+        """Connectivity monitor for proxied modes; None when disabled."""
+        if not self.settings.get("health_check", True):
+            return None
+        if self.settings.get("mode") == "direct":
+            return None
+        engine = self.settings.get("engine", "sing-box")
+        if engine == "sing-box":
+            auto_tag = ("proxy-auto"
+                        if self.settings.get("mode") == "urltest" else None)
+            control = (health.ClashGroupControl(self.clash_port,
+                                                auto_tag=auto_tag)
+                       if self.clash_port else None)
+        else:
+            control = health.RestartControl(
+                lambda: self.bin.restart(self.config_path,
+                                         port=self.effective_port))
+        return health.HealthMonitor(
+            port=self.effective_port or int(self.settings.get("local_port", 1080)),
+            test_url=self.settings.get("test_url"),
+            control=control,
+            notify=self.notify,
+            logger=self.log,
+            interval=int(self.settings.get("health_interval", 30) or 30),
+            auto_failover=self.settings.get("mode") == "urltest")
 
     def build_and_write_config(self):
         enabled = self.store.enabled()
@@ -157,6 +198,10 @@ class ProxySupervisor(object):
         if self._shutting_down:
             self.log("start: shutting down, engine not started", "warn")
             return False
+        # Kill leftovers from a previous run BEFORE picking a port: a stale
+        # engine still holding the configured port must not push us onto a
+        # fallback port.
+        self.bin.kill_stale()
         self._resolve_effective_port()
         return self._start_with_port()
 
@@ -175,12 +220,14 @@ class ProxySupervisor(object):
         self.consecutive_failures = 0
         self._was_running = True
         self._last_active_tag = self.store.active_tag
+        self.health = self._make_health_monitor()
         self._write_state()
         return True
 
     def stop(self):
         self.begin_shutdown()
         self.bin.stop(port=self.effective_port)
+        self.health = None
         self._was_running = False
         self._write_state()
 
@@ -212,6 +259,7 @@ class ProxySupervisor(object):
         if was_running:
             self.bin.stop(port=self.effective_port)
         self.bin = self._make_binary_manager()
+        self.bin.kill_stale()
         self._resolve_effective_port()
         if was_running or (self.settings.get("autostart") and self.store.enabled()):
             self._start_with_port()
@@ -232,6 +280,11 @@ class ProxySupervisor(object):
                             % (self.bin.engine,
                                self.effective_port or self.settings.get("local_port")))
             self._watch_active_change()
+            if self.health is not None:
+                try:
+                    self.health.tick(now)
+                except Exception as e:
+                    self.log("health check error: %s" % e, "warn")
             return
 
         if self.bin.proc is not None:

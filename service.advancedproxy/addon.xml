@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="service.advancedproxy" name="Advanced Proxy" version="0.4.8" provider-name="advancedproxy">
+<addon id="service.advancedproxy" name="Advanced Proxy" version="0.5.0" provider-name="advancedproxy">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
@@ -18,6 +18,14 @@
         <website></website>
         <source></source>
         <news>
+0.5.0
+- DNS overhaul: DoH/DoT/UDP provider presets (Cloudflare, Google, Quad9, AdGuard, Yandex, CleanBrowsing) plus a custom option
+- Secure DNS (DoH/DoT) now travels inside the tunnel, so neither the ISP nor a server that substitutes DNS answers can poison lookups
+- Bootstrap DNS uses the router-provided resolver (DHCP), fixing hostname-based DoH/DoT servers
+- Auto mode now health-checks real connectivity through the proxy: on a blocked tunnel it actively switches outbound and tells you (also reports engine-side switches and recovery)
+- Subscriptions are yellow section headers above their profiles; click a header to refresh it; multiple subscriptions supported
+- Fix Xray SOCKS inbound starving on a port shared with HTTP (SOCKS now uses the next port)
+
 0.4.8
 - New Direct mode: route everything locally without a proxy (a third switch alongside Automatic and Manual)
 - Auto mode no longer flips to Manual when you tap a profile; it stays Automatic and can still switch on its own

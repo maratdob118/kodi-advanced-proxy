@@ -407,3 +407,83 @@ msgstr ""
 msgctxt "#32251"
 msgid "Direct (no proxy)"
 msgstr ""
+
+msgctxt "#32252"
+msgid "DNS provider"
+msgstr ""
+
+msgctxt "#32253"
+msgid "Auto (router DNS)"
+msgstr ""
+
+msgctxt "#32254"
+msgid "Cloudflare DoH"
+msgstr ""
+
+msgctxt "#32255"
+msgid "Cloudflare DoT"
+msgstr ""
+
+msgctxt "#32256"
+msgid "Cloudflare UDP"
+msgstr ""
+
+msgctxt "#32257"
+msgid "Google DoH"
+msgstr ""
+
+msgctxt "#32258"
+msgid "Google DoT"
+msgstr ""
+
+msgctxt "#32259"
+msgid "Google UDP"
+msgstr ""
+
+msgctxt "#32260"
+msgid "Quad9 DoH"
+msgstr ""
+
+msgctxt "#32261"
+msgid "Quad9 DoT"
+msgstr ""
+
+msgctxt "#32262"
+msgid "Quad9 UDP"
+msgstr ""
+
+msgctxt "#32263"
+msgid "AdGuard DoH"
+msgstr ""
+
+msgctxt "#32264"
+msgid "AdGuard DoT"
+msgstr ""
+
+msgctxt "#32265"
+msgid "AdGuard UDP"
+msgstr ""
+
+msgctxt "#32266"
+msgid "Yandex DoH"
+msgstr ""
+
+msgctxt "#32267"
+msgid "Yandex UDP"
+msgstr ""
+
+msgctxt "#32268"
+msgid "CleanBrowsing DoH"
+msgstr ""
+
+msgctxt "#32269"
+msgid "Custom"
+msgstr ""
+
+msgctxt "#32270"
+msgid "Health check with auto-failover"
+msgstr ""
+
+msgctxt "#32271"
+msgid "Health check interval (seconds)"
+msgstr ""
