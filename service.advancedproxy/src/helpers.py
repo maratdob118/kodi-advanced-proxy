@@ -56,7 +56,25 @@ _DNS_STRATEGIES = {
 def _read_kodi_settings():
     import xbmcaddon
     addon = xbmcaddon.Addon(ADDON_ID)
-    return {k: addon.getSetting(k) for k in _DEFAULTS}
+    raw = {k: addon.getSetting(k) for k in _DEFAULTS}
+    # getSetting() returns the settings.xml default ("0") for a setting the
+    # user never touched, so an untouched dns_preset is indistinguishable
+    # from an explicit "Auto". Look at the persisted settings file: if
+    # dns_preset was never written, mark it empty so the legacy fallback
+    # (hand-entered dns_server -> Custom preset) can kick in.
+    if raw.get("dns_server") and not _setting_persisted("dns_preset"):
+        raw["dns_preset"] = ""
+    return raw
+
+
+def _setting_persisted(setting_id):
+    """True when SETTING_ID exists in the user's addon settings file."""
+    try:
+        path = os.path.join(profile_dir(), "settings.xml")
+        with open(path, "rb") as f:
+            return ('id="%s"' % setting_id).encode("utf-8") in f.read()
+    except OSError:
+        return False
 
 
 def get_settings(reader=None):
@@ -82,7 +100,7 @@ def get_settings(reader=None):
     # dns_server field. An install that only has a hand-entered dns_server
     # (predating presets) is treated as "custom" so it is not overridden.
     preset_id = dns_utils.preset_id_by_index(s("dns_preset"))
-    if "dns_preset" not in raw and raw.get("dns_server"):
+    if not str(raw.get("dns_preset") or "").strip() and raw.get("dns_server"):
         preset_id = dns_utils.CUSTOM_PRESET
     dns_server = dns_utils.preset_server(preset_id, s("dns_server"))
 

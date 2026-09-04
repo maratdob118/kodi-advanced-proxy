@@ -702,6 +702,21 @@ class TestHelpersDns(unittest.TestCase):
         self.assertEqual(s["dns_preset"], "custom")
         self.assertEqual(s["dns_server"], "8.8.8.8")
 
+    def test_untouched_preset_with_custom_server_stays_custom(self):
+        # Kodi returns "" or the default "0" for an unset setting depending
+        # on the reader; _read_kodi_settings marks untouched as "". Either
+        # way a hand-entered server must not be discarded.
+        raw = {"dns_preset": "", "dns_server": "8.8.8.8"}
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["dns_preset"], "custom")
+        self.assertEqual(s["dns_server"], "8.8.8.8")
+
+    def test_explicit_auto_preset_wins_over_stale_server(self):
+        raw = {"dns_preset": "0", "dns_server": "8.8.8.8"}
+        s = helpers.get_settings(reader=lambda: raw)
+        self.assertEqual(s["dns_preset"], "auto")
+        self.assertEqual(s["dns_server"], "")
+
     def test_parse_dns_server_delegates(self):
         self.assertEqual(helpers.parse_dns_server("tls://1.1.1.1"),
                          {"kind": "dot", "host": "1.1.1.1", "port": 853})
