@@ -159,6 +159,23 @@ def _outbound(p):
     return None
 
 
+def _duration_seconds(value, default=180):
+    """Parse sing-box duration strings like "3m"/"30s"/"1h" into seconds."""
+    try:
+        text = str(value).strip()
+        if text.endswith("ms"):
+            return max(1, int(text[:-2]) // 1000)
+        if text.endswith("m"):
+            return int(text[:-1]) * 60
+        if text.endswith("s"):
+            return int(text[:-1])
+        if text.endswith("h"):
+            return int(text[:-1]) * 3600
+        return int(text)
+    except (TypeError, ValueError):
+        return default
+
+
 def build_outbounds(profiles):
     """Return (outbounds, tags, skipped) for enabled neutral profiles."""
     outbounds, tags, skipped = [], [], []
@@ -254,6 +271,7 @@ def build_config(profiles, settings, active_tag=None):
     outbounds, tags, skipped = build_outbounds(profiles)
 
     mode = settings.get("mode", "urltest")
+    extra_chooser = None
     if mode == "direct":
         chooser = None
         final = "direct"
@@ -268,16 +286,33 @@ def build_config(profiles, settings, active_tag=None):
                 "interrupt_exist_connections": bool(settings.get("interrupt_connections", True)),
             }
         else:
-            chooser = {
+            interval = settings.get("urltest_interval", "3m")
+            # sing-box requires interval <= idle_timeout; a long user
+            # interval must stretch the idle timeout instead of failing.
+            idle = max(300, 2 * _duration_seconds(interval))
+            # The Clash API cannot force-select inside a urltest group, so
+            # the urltest sits behind a thin selector: normally the selector
+            # points at "proxy-auto" and urltest does its job, and the
+            # health monitor can pin a specific node via the selector when
+            # the automatic choice stalls.
+            urltest = {
                 "type": "urltest",
-                "tag": "proxy",
+                "tag": "proxy-auto",
                 "outbounds": tags,
                 "url": settings.get("test_url", "https://www.gstatic.com/generate_204"),
-                "interval": settings.get("urltest_interval", "3m"),
+                "interval": interval,
                 "tolerance": int(settings.get("urltest_tolerance", 50)),
-                "idle_timeout": "5m",
+                "idle_timeout": "%ds" % idle,
                 "interrupt_exist_connections": False,
             }
+            chooser = {
+                "type": "selector",
+                "tag": "proxy",
+                "outbounds": ["proxy-auto"] + tags,
+                "default": "proxy-auto",
+                "interrupt_exist_connections": False,
+            }
+            extra_chooser = urltest
         final = "proxy"
     else:
         chooser = None
@@ -304,11 +339,16 @@ def build_config(profiles, settings, active_tag=None):
     rules.append({"ip_is_private": True, "action": "route",
                   "outbound": "direct"})
 
-    return {
+    chain = ([extra_chooser, chooser] if extra_chooser else
+             ([chooser] if chooser else []))
+    # Node outbounds only ship with a chooser; direct mode drops them.
+    outbounds_all = (outbounds + chain) if chooser else []
+
+    config = {
         "log": log_cfg,
         "dns": _dns_block(settings, proxy_detour=(final == "proxy")),
         "inbounds": inbounds,
-        "outbounds": (outbounds + [chooser] if chooser else []) + [
+        "outbounds": outbounds_all + [
             {"type": "direct", "tag": "direct"}],
         "route": {
             "rules": rules,
@@ -318,4 +358,14 @@ def build_config(profiles, settings, active_tag=None):
             # must work before any secure resolver is reachable.
             "default_domain_resolver": "bootstrap",
         },
-    }, skipped
+    }
+    # Clash API lets the supervisor's health monitor see and steer the
+    # urltest/selector group when the engine's own probing stalls.
+    if chooser is not None and settings.get("clash_api_port"):
+        config["experimental"] = {
+            "clash_api": {
+                "external_controller": "127.0.0.1:%d"
+                                       % int(settings["clash_api_port"]),
+            },
+        }
+    return config, skipped

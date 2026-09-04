@@ -93,6 +93,24 @@
                     <default>true</default>
                     <control type="toggle"/>
                 </setting>
+                <setting id="health_check" type="boolean" label="32270" help="32270">
+                    <level>0</level>
+                    <default>true</default>
+                    <control type="toggle"/>
+                </setting>
+                <setting id="health_interval" type="integer" label="32271" help="32271">
+                    <level>1</level>
+                    <default>30</default>
+                    <constraints>
+                        <minimum>10</minimum>
+                        <step>10</step>
+                        <maximum>600</maximum>
+                    </constraints>
+                    <control type="slider" format="integer">
+                        <popup>true</popup>
+                        <heading>32271</heading>
+                    </control>
+                </setting>
             </group>
 
             <group id="3" label="32004">

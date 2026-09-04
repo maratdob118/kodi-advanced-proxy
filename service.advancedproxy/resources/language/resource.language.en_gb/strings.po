@@ -479,3 +479,11 @@ msgstr ""
 msgctxt "#32269"
 msgid "Custom"
 msgstr ""
+
+msgctxt "#32270"
+msgid "Health check with auto-failover"
+msgstr ""
+
+msgctxt "#32271"
+msgid "Health check interval (seconds)"
+msgstr ""

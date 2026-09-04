@@ -122,6 +122,7 @@ import binary_manager  # noqa: E402
 import build_singbox  # noqa: E402
 import build_xray  # noqa: E402
 import dns_utils  # noqa: E402
+import health  # noqa: E402
 import helpers  # noqa: E402
 import osarch  # noqa: E402
 import parsers  # noqa: E402
@@ -765,6 +766,253 @@ class TestDirectoryGrouping(unittest.TestCase):
         header = [e for e in entries if e["kind"] == "subscription"][0]
         self.assertEqual(header["status"], "error: boom")
         self.assertEqual(header["count"], 0)
+
+
+class _FakeGroupControl(object):
+    """In-memory urltest group: `working` holds outbound tags that pass."""
+
+    def __init__(self, members, working=()):
+        self._members = list(members)
+        self.working = set(working)
+        self.now = self._members[0] if self._members else None
+        self.selections = []
+
+    def current(self):
+        return self.now
+
+    def effective(self):
+        return self.now
+
+    def members(self):
+        return list(self._members)
+
+    def select(self, tag):
+        self.now = tag
+        self.selections.append(tag)
+        return True
+
+
+class TestHealthMonitor(unittest.TestCase):
+    def _monitor(self, control=None, working=True, **kw):
+        notes = []
+        logs = []
+        args = dict(
+            port=1080, test_url="https://x/204", control=control,
+            notify=lambda msg, error=False: notes.append((msg, error)),
+            logger=lambda msg, level="info": logs.append((level, msg)),
+            interval=30, fail_threshold=2, sleeper=lambda s: None)
+        args.update(kw)
+        mon = health.HealthMonitor(**args)
+        ctl = control
+
+        def fetch(url, port):
+            if ctl is not None and hasattr(ctl, "now"):
+                return ctl.now in ctl.working
+            return working
+
+        mon.fetch = fetch
+        return mon, notes
+
+    def test_healthy_no_notifications(self):
+        mon, notes = self._monitor()
+        self.assertTrue(mon.check())
+        self.assertEqual(notes, [])
+        self.assertFalse(mon._down)
+
+    def test_single_failure_below_threshold_stays_quiet(self):
+        mon, notes = self._monitor(working=False)
+        self.assertFalse(mon.check())
+        self.assertEqual(notes, [])
+        self.assertFalse(mon._down)
+
+    def test_sustained_failure_notifies_outage_and_failover(self):
+        ctl = _FakeGroupControl(["A", "B", "C"], working={"B"})
+        mon, notes = self._monitor(control=ctl)
+        mon.check()
+        mon.check()  # threshold reached -> failover walks A(dead) B(alive)
+        self.assertEqual(ctl.now, "B")
+        self.assertIn(("No internet via proxy, switching...", True), notes)
+        self.assertIn(("Switched: A -> B", False), notes)
+        self.assertFalse(mon._down)
+
+    def test_all_dead_restores_original_and_reports(self):
+        ctl = _FakeGroupControl(["A", "B"], working=set())
+        mon, notes = self._monitor(control=ctl)
+        mon.check()
+        mon.check()
+        self.assertEqual(ctl.now, "A", "original selection must be restored")
+        self.assertIn(("All proxy servers unreachable", True), notes)
+        self.assertTrue(mon._down)
+
+    def test_recovery_notifies(self):
+        ctl = _FakeGroupControl(["A"], working=set())
+        mon, notes = self._monitor(control=ctl)
+        mon.check()
+        mon.check()
+        self.assertTrue(mon._down)
+        ctl.working.add("A")
+        mon.check()
+        self.assertIn(("Proxy connectivity restored", False), notes)
+        self.assertFalse(mon._down)
+
+    def test_engine_side_switch_is_reported(self):
+        ctl = _FakeGroupControl(["A", "B"], working={"A", "B"})
+        mon, notes = self._monitor(control=ctl)
+        mon.check()  # learns current = A
+        ctl.now = "B"  # engine urltest switched on its own
+        mon.check()
+        self.assertIn(("Auto-switch: A -> B", False), notes)
+
+    def test_restart_control_used_when_no_group(self):
+        calls = []
+        ctl = health.RestartControl(lambda: calls.append("restart"))
+        mon, notes = self._monitor(control=ctl, working=False)
+        mon.check()
+        mon.check()
+        self.assertEqual(calls, ["restart"])
+        self.assertIn(("All proxy servers unreachable", True), notes)
+
+    def test_tick_respects_interval(self):
+        mon, _ = self._monitor()
+        self.assertTrue(mon.tick(now=1000))
+        self.assertIsNone(mon.tick(now=1010))
+        self.assertTrue(mon.tick(now=1031))
+
+    def test_fallback_urls_tried(self):
+        seen = []
+        mon, _ = self._monitor()
+        mon.fetch = lambda url, port: seen.append(url) or \
+            url == health.FALLBACK_URLS[0]
+        self.assertTrue(mon.check())
+        self.assertEqual(seen[0], "https://x/204")
+        self.assertEqual(seen[1], health.FALLBACK_URLS[0])
+
+    def test_auto_failover_disabled_keeps_selection(self):
+        ctl = _FakeGroupControl(["A", "B"], working={"B"})
+        mon, notes = self._monitor(control=ctl, auto_failover=False)
+        mon.check()
+        mon.check()
+        self.assertEqual(ctl.now, "A")
+        self.assertIn(("No internet via proxy, switching...", True), notes)
+
+
+class TestClashGroupControl(unittest.TestCase):
+    def _opener(self, payload, put_status=204):
+        class _Resp(object):
+            status = put_status
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps(payload).encode("utf-8")
+
+        class _Opener(object):
+            def __init__(self):
+                self.requests = []
+
+            def open(self, request, timeout=5):
+                url = getattr(request, "full_url", request)
+                self.requests.append(url)
+                return _Resp()
+
+        return _Opener()
+
+    def test_current_and_members(self):
+        opener = self._opener({"now": "B", "all": ["A", "B"]})
+        ctl = health.ClashGroupControl(9091, opener=opener)
+        self.assertEqual(ctl.current(), "B")
+        self.assertEqual(ctl.members(), ["A", "B"])
+
+    def test_select_puts_name(self):
+        opener = self._opener({})
+        ctl = health.ClashGroupControl(9091, opener=opener)
+        self.assertTrue(ctl.select("B"))
+        self.assertIn("/proxies/proxy", opener.requests[0])
+
+    def test_api_down_returns_none_not_exception(self):
+        class _Broken(object):
+            def open(self, request, timeout=5):
+                raise OSError("connection refused")
+
+        ctl = health.ClashGroupControl(9091, opener=_Broken())
+        self.assertIsNone(ctl.current())
+        self.assertEqual(ctl.members(), [])
+        self.assertFalse(ctl.select("A"))
+
+
+class TestSupervisorHealthWiring(unittest.TestCase):
+    def _supervisor(self, tmp, **settings):
+        base = {"local_port": 1080, "mode": "urltest", "engine": "sing-box",
+                "test_url": "https://x/204"}
+        base.update(settings)
+        return supervisor.ProxySupervisor(settings=base, addon_dir=tmp,
+                                          work_dir=tmp)
+
+    def test_monitor_created_for_urltest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp)
+            sup.effective_port = 1080
+            sup.clash_port = 1180
+            mon = sup._make_health_monitor()
+            self.assertIsNotNone(mon)
+            self.assertIsInstance(mon.control, health.ClashGroupControl)
+            self.assertTrue(mon.auto_failover)
+
+    def test_monitor_none_in_direct_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp, mode="direct")
+            self.assertIsNone(sup._make_health_monitor())
+
+    def test_monitor_none_when_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp, health_check=False)
+            self.assertIsNone(sup._make_health_monitor())
+
+    def test_xray_gets_restart_control_without_group_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp, engine="xray")
+            sup.effective_port = 1080
+            mon = sup._make_health_monitor()
+            self.assertIsInstance(mon.control, health.RestartControl)
+            self.assertTrue(mon.auto_failover)
+
+    def test_manual_mode_no_auto_failover(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp, mode="manual")
+            sup.effective_port = 1080
+            sup.clash_port = 1180
+            mon = sup._make_health_monitor()
+            self.assertFalse(mon.auto_failover)
+
+    def test_clash_port_reserved_for_singbox(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp)
+            sup._resolve_effective_port()
+            self.assertIsNotNone(sup.clash_port)
+            self.assertGreater(sup.clash_port, sup.effective_port)
+            s = sup._build_settings()
+            self.assertEqual(s["clash_api_port"], sup.clash_port)
+
+    def test_clash_api_block_in_config(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        s = {"local_port": 1080, "mode": "urltest", "urltest_interval": "3m",
+             "urltest_tolerance": 50, "test_url": "https://x/204",
+             "log_level": "info", "clash_api_port": 1180,
+             "dns_bootstrap": ["192.168.1.1"]}
+        cfg, _ = build_singbox.build_config(profs, s)
+        api = cfg["experimental"]["clash_api"]
+        self.assertEqual(api["external_controller"], "127.0.0.1:1180")
+
+    def test_no_clash_api_in_direct_mode(self):
+        profs, _ = parsers.parse_lines([VLESS])
+        s = {"local_port": 1080, "mode": "direct", "log_level": "info",
+             "clash_api_port": 1180, "dns_bootstrap": ["192.168.1.1"]}
+        cfg, _ = build_singbox.build_config(profs, s)
+        self.assertNotIn("experimental", cfg)
 
 
 class TestHelpers(unittest.TestCase):
