@@ -367,33 +367,49 @@ def build_directory_entries(store, mode, base_url, latencies=None,
         entries.append({"kind": "info",
                         "str_id": 32208,
                         "url": base_url + "?action=add"})
-    for p in store.profiles:
+
+    def profile_entry(p, grouped=False):
         tag_q = urllib.parse.urlencode({"tag": p["tag"]})
-        entries.append({
+        return {
             "kind": "profile",
             "tag": p["tag"],
             "protocol": p["protocol"],
             "enabled": p.get("enabled", True),
             "is_active": p["tag"] == store.active_tag,
+            "grouped": grouped,
             "latency_ms": latencies.get(p["tag"]) if p.get("enabled", True) else None,
             "click_url": base_url + "?action=activate&" + tag_q,
             "toggle_url": base_url + "?action=toggle&" + tag_q,
             "remove_url": base_url + "?action=remove&" + tag_q,
             "copy_url": base_url + "?action=copy&" + tag_q,
-        })
+        }
+
+    # Subscriptions are section headers: each group opens with its header
+    # (click = refresh) followed by the profiles that belong to it, so
+    # several subscriptions can coexist without merging into one list.
+    grouped_ids = set()
     for group in subscriptions or ():
         id_q = urllib.parse.urlencode({"id": group["id"]})
         status = ("error: %s" % group["last_error"]) if group.get("last_error") \
             else ("updated" if group.get("last_updated") else "never")
+        members = [p for p in store.profiles
+                   if p.get("subscription") == group["id"]]
+        grouped_ids.add(group["id"])
         entries.append({
             "kind": "subscription",
             "id": group["id"],
             "url": group["url"],
             "status": status,
+            "count": len(members),
             "click_url": base_url + "?action=sub_refresh&" + id_q,
             "refresh_url": base_url + "?action=sub_refresh&" + id_q,
             "remove_url": base_url + "?action=sub_remove&" + id_q,
         })
+        for p in members:
+            entries.append(profile_entry(p, grouped=True))
+    for p in store.profiles:
+        if p.get("subscription") not in grouped_ids:
+            entries.append(profile_entry(p))
     entries.append({"kind": "action", "action": "add", "str_id": 32200,
                     "url": base_url + "?action=add"})
     entries.append({"kind": "action", "action": "test", "str_id": 32202,

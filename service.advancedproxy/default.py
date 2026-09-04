@@ -62,6 +62,8 @@ def _profile_label(e):
     else:
         latency_text = "disabled"
     label = "%s (%s) - %s" % (e["tag"], e["protocol"], latency_text)
+    if e.get("grouped"):
+        label = "  " + label
     if e["is_active"]:
         return "[COLOR lime]%s[/COLOR]" % label
     elif not e["enabled"]:
@@ -114,8 +116,9 @@ def _show_listing(handle):
             xbmcplugin.addDirectoryItem(handle, e["click_url"],
                                         _profile_item(e), isFolder=False)
         elif kind == "subscription":
-            liz = xbmcgui.ListItem(label="[COLOR orange]%s[/COLOR] (%s)"
-                                   % (e["url"], e["status"]))
+            liz = xbmcgui.ListItem(
+                label="[COLOR yellow]%s[/COLOR] (%d, %s)"
+                % (e["url"], e.get("count", 0), e["status"]))
             liz.setProperty("isPlayable", "false")
             liz.addContextMenuItems([
                 (_ls(32227), "RunPlugin(%s)" % e["refresh_url"]),

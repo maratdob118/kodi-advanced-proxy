@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import shutil
 import unittest
 from unittest.mock import patch
 
@@ -703,6 +704,67 @@ class TestHelpersDns(unittest.TestCase):
     def test_parse_dns_server_delegates(self):
         self.assertEqual(helpers.parse_dns_server("tls://1.1.1.1"),
                          {"kind": "dot", "host": "1.1.1.1", "port": 853})
+
+
+class TestDirectoryGrouping(unittest.TestCase):
+    """Subscription groups render as header + their profiles."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.store = profiles.ProfileStore(os.path.join(self.tmp, "p.json"))
+
+    def _build(self, subs):
+        return helpers.build_directory_entries(
+            self.store, "urltest", "plugin://service.advancedproxy/",
+            subscriptions=subs)
+
+    def _kinds(self, entries):
+        return [e["kind"] for e in entries]
+
+    def test_headers_precede_their_profiles(self):
+        self.store.add_subscription_profiles(
+            parsers.parse_lines([VLESS, HY2])[0], "sub-aaa")
+        self.store.add_subscription_profiles(
+            parsers.parse_lines([TROJAN])[0], "sub-bbb")
+        subs = [{"id": "sub-aaa", "url": "https://a/sub", "last_updated": 1},
+                {"id": "sub-bbb", "url": "https://b/sub", "last_updated": 1}]
+        entries = self._build(subs)
+        tags = [e.get("tag", e.get("id")) for e in entries
+                if e["kind"] in ("profile", "subscription")]
+        self.assertEqual(tags, ["sub-aaa", "AUTO:VLESS", "AUTO:Hysteria2",
+                                "sub-bbb", "AUTO:Trojan"])
+
+    def test_ungrouped_profiles_come_after_groups(self):
+        self.store.add_uri(VLESS)  # manual, no subscription
+        self.store.add_subscription_profiles(
+            parsers.parse_lines([TROJAN])[0], "sub-bbb")
+        subs = [{"id": "sub-bbb", "url": "https://b/sub", "last_updated": 1}]
+        entries = self._build(subs)
+        tags = [e.get("tag", e.get("id")) for e in entries
+                if e["kind"] in ("profile", "subscription")]
+        self.assertEqual(tags, ["sub-bbb", "AUTO:Trojan", "AUTO:VLESS"])
+        grouped = {e["tag"]: e["grouped"] for e in entries
+                   if e["kind"] == "profile"}
+        self.assertEqual(grouped, {"AUTO:Trojan": True, "AUTO:VLESS": False})
+
+    def test_header_click_refreshes_and_counts_profiles(self):
+        self.store.add_subscription_profiles(
+            parsers.parse_lines([VLESS, HY2])[0], "sub-aaa")
+        subs = [{"id": "sub-aaa", "url": "https://a/sub", "last_updated": 1}]
+        entries = self._build(subs)
+        header = [e for e in entries if e["kind"] == "subscription"][0]
+        self.assertEqual(header["count"], 2)
+        self.assertIn("action=sub_refresh", header["click_url"])
+        self.assertIn("id=sub-aaa", header["click_url"])
+
+    def test_empty_subscription_still_shows_header(self):
+        subs = [{"id": "sub-aaa", "url": "https://a/sub",
+                 "last_error": "boom"}]
+        entries = self._build(subs)
+        header = [e for e in entries if e["kind"] == "subscription"][0]
+        self.assertEqual(header["status"], "error: boom")
+        self.assertEqual(header["count"], 0)
 
 
 class TestHelpers(unittest.TestCase):
