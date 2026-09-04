@@ -1108,6 +1108,79 @@ class TestHelpers(unittest.TestCase):
 
 
 class TestBinaryManager(unittest.TestCase):
+    def _orphan(self, bm):
+        """Spawn a real process whose cmdline contains bm.work_binary."""
+        os.makedirs(bm.work_dir_bin, exist_ok=True)
+        with open(bm.work_binary, "w") as f:
+            f.write("#!/bin/sh\nsleep 300\n")
+        os.chmod(bm.work_binary, 0o755)
+        # Detach stdio: the script's `sleep` child would otherwise inherit
+        # the test runner's stdout and hold the pipe open for 300s.
+        return subprocess.Popen([bm.work_binary], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "needs /proc")
+    def test_kill_stale_terminates_orphan_process(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(
+                addon, work, platform_override="linux_x64")
+            orphan = self._orphan(bm)
+            try:
+                self.assertIn(orphan.pid, bm._stale_pids())
+                self.assertEqual(bm.kill_stale(), 1)
+                orphan.wait(timeout=10)
+            finally:
+                if orphan.poll() is None:
+                    orphan.kill()
+                    orphan.wait(timeout=5)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "needs /proc")
+    def test_kill_stale_via_pidfile_and_removes_it(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(
+                addon, work, platform_override="linux_x64")
+            orphan = self._orphan(bm)
+            try:
+                with open(bm.pidfile, "w") as f:
+                    f.write(str(orphan.pid))
+                self.assertIn(orphan.pid, bm._stale_pids())
+                self.assertEqual(bm.kill_stale(), 1)
+                orphan.wait(timeout=10)
+                self.assertFalse(os.path.exists(bm.pidfile))
+            finally:
+                if orphan.poll() is None:
+                    orphan.kill()
+                    orphan.wait(timeout=5)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "needs /proc")
+    def test_supervised_process_is_never_stale(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(
+                addon, work, platform_override="linux_x64")
+            orphan = self._orphan(bm)
+            try:
+                bm.proc = orphan  # currently supervised: hands off
+                self.assertNotIn(orphan.pid, bm._stale_pids())
+            finally:
+                bm.proc = None
+                orphan.kill()
+                orphan.wait(timeout=5)
+
+    @unittest.skipUnless(os.path.isdir("/proc"), "needs /proc")
+    def test_foreign_processes_untouched(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(
+                addon, work, platform_override="linux_x64")
+            other = subprocess.Popen(["sleep", "300"], stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+            try:
+                self.assertEqual(bm._stale_pids(), [])
+                self.assertEqual(bm.kill_stale(), 0)
+                self.assertIsNone(other.poll())
+            finally:
+                other.kill()
+                other.wait(timeout=5)
+
     def test_paths(self):
         with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
             bm = binary_manager.BinaryManager(addon, work, platform_override="linux_x64")
@@ -1244,6 +1317,10 @@ class _FakeBin(object):
 
     def check(self, config_path):
         return True, ""
+
+    def kill_stale(self):
+        self._calls.append(("kill_stale", self.name))
+        return 0
 
 
 class TestSupervisorReconfigureEngine(unittest.TestCase):
@@ -2294,6 +2371,10 @@ class _FakeBinaryManager(object):
 
     def check(self, config_path):
         return True, ""
+
+    def kill_stale(self):
+        self.calls.append(("kill_stale",))
+        return 0
 
     def crash(self, code=1):
         self.proc.exit(code)

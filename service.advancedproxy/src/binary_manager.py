@@ -6,6 +6,7 @@ chmod +x, launch, monitor, stop, and per-engine config validation. Kodi-free.
 """
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import tarfile
@@ -74,6 +75,110 @@ class BinaryManager(object):
     @property
     def work_dir_bin(self):
         return os.path.dirname(self.work_binary)
+
+    @property
+    def pidfile(self):
+        return os.path.join(self.work_dir, "%s.pid" % self.engine)
+
+    # ----- stale process cleanup ------------------------------------
+    def _managed_paths(self):
+        """Binary paths we consider ours when hunting stale processes."""
+        paths = [self.work_binary]
+        if self.custom_path:
+            paths.append(os.path.expanduser(self.custom_path.strip()))
+        return [p for p in paths if p]
+
+    @staticmethod
+    def _pid_cmdline(pid):
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                return f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            return None
+
+    def _pid_is_ours(self, pid, paths):
+        cmdline = self._pid_cmdline(pid)
+        if cmdline is None:
+            return False
+        return any(p in cmdline for p in paths)
+
+    def _stale_pids(self):
+        """PIDs of engine processes from previous addon runs.
+
+        Sources: the pidfile written on start, and a /proc scan for our
+        managed binary paths. The currently supervised process and this
+        Python process are excluded. Without this an orphan from a previous
+        run keeps the proxy port busy and the fresh engine silently falls
+        back to another port while Kodi keeps pointing at the old one.
+        """
+        pids = set()
+        own = self.proc.pid if self.proc is not None else None
+        paths = self._managed_paths()
+        try:
+            with open(self.pidfile) as f:
+                pidfile_pid = int(f.read().strip())
+        except (OSError, ValueError):
+            pidfile_pid = None
+        if pidfile_pid and pidfile_pid != own and pidfile_pid != os.getpid():
+            if self._pid_is_ours(pidfile_pid, paths):
+                pids.add(pidfile_pid)
+        if os.path.isdir("/proc"):
+            for entry in os.listdir("/proc"):
+                if not entry.isdigit():
+                    continue
+                pid = int(entry)
+                if pid in (own, os.getpid()):
+                    continue
+                if self._pid_is_ours(pid, paths):
+                    pids.add(pid)
+        return sorted(pids)
+
+    def kill_stale(self, term_timeout=5.0):
+        """Terminate leftover engine processes; returns how many were found.
+
+        SIGTERM first, SIGKILL for survivors after term_timeout. No-op on
+        platforms without /proc (Windows, macOS): the pidfile check still
+        needs /proc to verify the PID is really ours, so killing is skipped
+        entirely rather than risking a reused foreign PID.
+        """
+        if not os.path.isdir("/proc"):
+            return 0
+        targets = self._stale_pids()
+        if not targets:
+            return 0
+        for pid in targets:
+            self.log("killing stale %s process (pid %s)" % (self.engine, pid),
+                     "warn")
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        deadline = time.time() + term_timeout
+        remaining = list(targets)
+        while remaining and time.time() < deadline:
+            remaining = [pid for pid in remaining
+                         if self._pid_is_ours(pid, self._managed_paths())]
+            if remaining:
+                time.sleep(0.1)
+        for pid in remaining:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        try:
+            os.remove(self.pidfile)
+        except OSError:
+            pass
+        return len(targets)
+
+    def _write_pidfile(self):
+        try:
+            tmp = self.pidfile + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(str(self.proc.pid))
+            os.replace(tmp, self.pidfile)
+        except OSError:
+            pass
 
     # ----- prepare ---------------------------------------------------
     def ensure_binary(self):
@@ -232,6 +337,7 @@ class BinaryManager(object):
         if self.is_running():
             self.log("%s already running (pid %s)" % (self.engine, self.proc.pid))
             return self.proc
+        self.kill_stale()
         binary = self.ensure_binary()
         args = [binary, "run", "-c", config_path]
         self.log("Starting %s: %s (platform %s)" % (self.engine, " ".join(args), self.platform))
@@ -249,6 +355,7 @@ class BinaryManager(object):
             kwargs["start_new_session"] = True
 
         self.proc = subprocess.Popen(args, **kwargs)
+        self._write_pidfile()
         self.log("%s started, pid %s" % (self.engine, self.proc.pid))
         if port is not None and not self._wait_for_readiness(port, ready_timeout):
             self.log("%s not ready on port %s within %ss; stopping spawned process"
@@ -310,6 +417,10 @@ class BinaryManager(object):
                              % (self.engine, self.proc.pid, e), "warn")
                     return False
         self.proc = None
+        try:
+            os.remove(self.pidfile)
+        except OSError:
+            pass
         if port is not None:
             self._wait_for_listener_release(port, release_timeout)
         return True

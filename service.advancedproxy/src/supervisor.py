@@ -198,6 +198,10 @@ class ProxySupervisor(object):
         if self._shutting_down:
             self.log("start: shutting down, engine not started", "warn")
             return False
+        # Kill leftovers from a previous run BEFORE picking a port: a stale
+        # engine still holding the configured port must not push us onto a
+        # fallback port.
+        self.bin.kill_stale()
         self._resolve_effective_port()
         return self._start_with_port()
 
@@ -255,6 +259,7 @@ class ProxySupervisor(object):
         if was_running:
             self.bin.stop(port=self.effective_port)
         self.bin = self._make_binary_manager()
+        self.bin.kill_stale()
         self._resolve_effective_port()
         if was_running or (self.settings.get("autostart") and self.store.enabled()):
             self._start_with_port()
