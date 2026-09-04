@@ -1181,6 +1181,29 @@ class TestBinaryManager(unittest.TestCase):
                 other.kill()
                 other.wait(timeout=5)
 
+    @unittest.skipUnless(os.path.isdir("/proc"), "needs /proc")
+    def test_kill_stale_covers_the_other_engine(self):
+        """After an engine switch the orphan is the PREVIOUS engine's
+        process; the new manager must still find and kill it."""
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(
+                addon, work, engine="sing-box", platform_override="linux_x64")
+            other_path = os.path.join(work, "bin", "xray", "linux_x64", "xray")
+            os.makedirs(os.path.dirname(other_path))
+            with open(other_path, "w") as f:
+                f.write("#!/bin/sh\nsleep 300\n")
+            os.chmod(other_path, 0o755)
+            orphan = subprocess.Popen([other_path], stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL)
+            try:
+                self.assertIn(orphan.pid, bm._stale_pids())
+                self.assertEqual(bm.kill_stale(), 1)
+                orphan.wait(timeout=10)
+            finally:
+                if orphan.poll() is None:
+                    orphan.kill()
+                    orphan.wait(timeout=5)
+
     def test_paths(self):
         with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
             bm = binary_manager.BinaryManager(addon, work, platform_override="linux_x64")

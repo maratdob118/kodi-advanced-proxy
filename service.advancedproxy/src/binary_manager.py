@@ -82,8 +82,18 @@ class BinaryManager(object):
 
     # ----- stale process cleanup ------------------------------------
     def _managed_paths(self):
-        """Binary paths we consider ours when hunting stale processes."""
-        paths = [self.work_binary]
+        """Binary paths we consider ours when hunting stale processes.
+
+        Covers BOTH engines, not just the current one: after an engine
+        switch the orphan holding the port is by definition the other
+        binary, and a fresh Kodi boot only constructs the new engine's
+        manager.
+        """
+        suffix = ".exe" if self.platform.startswith("windows") else ""
+        paths = []
+        for engine in ("sing-box", "xray"):
+            paths.append(os.path.join(self.work_dir, "bin", engine,
+                                      self.platform, engine + suffix))
         if self.custom_path:
             paths.append(os.path.expanduser(self.custom_path.strip()))
         return [p for p in paths if p]
