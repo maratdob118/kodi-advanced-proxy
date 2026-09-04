@@ -28,6 +28,8 @@ echo ">> installing $ZIP"
 systemctl stop kodi
 rm -rf /storage/.kodi/addons/service.advancedproxy
 unzip -q -o "$ZIP" -d /storage/.kodi/addons/
+# Drop the stale runtime snapshot so the wait loop below sees a FRESH one.
+rm -f /storage/.kodi/userdata/addon_data/service.advancedproxy/state.json
 # Make sure the addon stays enabled (fresh install lands disabled on some skins).
 python3 - <<'PY' || true
 import sqlite3, glob, os
