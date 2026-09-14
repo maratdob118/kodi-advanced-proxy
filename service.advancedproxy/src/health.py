@@ -8,32 +8,54 @@ switches, nobody says anything". This monitor probes real connectivity
 THROUGH the local proxy every `interval` seconds and, on sustained failure,
 actively walks the urltest group (sing-box, via the Clash API) or restarts
 the engine (xray) until some outbound answers - notifying on outage, on
-switch and on recovery.
+switch and on recovery. When sing-box reports active proxy traffic, a probe
+is unnecessary. Otherwise the probe downloads enough data to expose DPI that
+permits a tiny request but disrupts media streams.
 """
 import json
+import socket
 import time
 import urllib.request
 
-# The primary test_url comes from settings; the fallbacks cover the case
-# where the primary target itself is blocked (gstatic is a popular block
-# target). http:// probes double as captive-portal-style checks.
-FALLBACK_URLS = (
-    "https://cp.cloudflare.com/generate_204",
-    "http://detectportal.firefox.com/success.txt",
-    "http://connectivitycheck.gstatic.com/generate_204",
-)
-
 DEFAULT_INTERVAL = 30
-FAIL_THRESHOLD = 2
+FAIL_THRESHOLD = 1
 OUTAGE_RETRY_EVERY = 4  # re-run failover every Nth failed check
+PROBE_BYTES = 500 * 1024
+PROBE_TIMEOUT = 4
+PROBE_URL = "https://speed.cloudflare.com/__down?bytes=%d" % PROBE_BYTES
+DIRECT_PROBE_URL = "https://cp.cloudflare.com/generate_204"
+DIRECT_TCP_TARGET = ("1.1.1.1", 443)
 
 
-def _proxy_fetch(url, port, timeout=10):
-    """GET URL through the local HTTP proxy. Returns True on any response."""
+def _proxy_fetch(url, port, timeout=PROBE_TIMEOUT, min_bytes=PROBE_BYTES):
+    """Download MIN_BYTES through the local HTTP proxy."""
     proxy = "http://127.0.0.1:%d" % port
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
     request = urllib.request.Request(url, headers={"User-Agent": "advancedproxy"})
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            received = 0
+            while received < min_bytes:
+                chunk = response.read(min(64 * 1024, min_bytes - received))
+                if not chunk:
+                    return False
+                received += len(chunk)
+        return True
+    except Exception:
+        return False
+
+
+def _direct_internet_available(timeout=PROBE_TIMEOUT):
+    """Check that the LAN itself can reach the Internet without the proxy."""
+    try:
+        sock = socket.create_connection(DIRECT_TCP_TARGET, timeout=timeout)
+        sock.close()
+    except OSError:
+        return False
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request = urllib.request.Request(DIRECT_PROBE_URL,
+                                     headers={"User-Agent": "advancedproxy"})
     try:
         with opener.open(request, timeout=timeout) as response:
             response.read(64)
@@ -101,6 +123,29 @@ class ClashGroupControl(object):
         except Exception:
             return False
 
+    def traffic_total(self):
+        """Return observed proxied bytes, or None when the API lacks totals."""
+        try:
+            payload = self._get("/connections")
+        except Exception:
+            return None
+        total = 0
+        found = False
+        for key in ("downloadTotal", "uploadTotal"):
+            value = payload.get(key)
+            if isinstance(value, (int, float)):
+                total += value
+                found = True
+        if found:
+            return total
+        for connection in payload.get("connections", []) or []:
+            for key in ("download", "upload"):
+                value = connection.get(key)
+                if isinstance(value, (int, float)):
+                    total += value
+                    found = True
+        return total if found else None
+
 
 class RestartControl(object):
     """xray has no group-switch API; restarting re-runs leastPing fully."""
@@ -133,12 +178,11 @@ class HealthMonitor(object):
     """
 
     def __init__(self, port, test_url, control=None, fetch=None,
-                 notify=None, logger=None, interval=DEFAULT_INTERVAL,
-                 fail_threshold=FAIL_THRESHOLD, auto_failover=True,
-                 sleeper=None):
+                  notify=None, logger=None, interval=DEFAULT_INTERVAL,
+                  fail_threshold=FAIL_THRESHOLD, auto_failover=True,
+                  sleeper=None, direct_probe=None):
         self.port = port
-        self.urls = [u for u in [test_url] if u] + [
-            u for u in FALLBACK_URLS if u != test_url]
+        self.urls = [PROBE_URL]
         self.control = control
         self.fetch = fetch
         self.notify = notify or (lambda msg, error=False: None)
@@ -151,6 +195,8 @@ class HealthMonitor(object):
         self._failures = 0
         self._down = False
         self._last_selected = None
+        self._last_traffic_total = None
+        self.direct_probe = direct_probe or _direct_internet_available
 
     def tick(self, now=None):
         now = time.time() if now is None else now
@@ -162,6 +208,10 @@ class HealthMonitor(object):
     def check(self):
         """One connectivity check. Returns True/False, or None on skip."""
         self._observe_selection()
+        if self._traffic_is_active():
+            self._failures = 0
+            self._down = False
+            return True
         if self._any_url_ok():
             if self._down:
                 self._down = False
@@ -176,9 +226,9 @@ class HealthMonitor(object):
         if not self._down:
             self._down = True
             self.notify("No internet via proxy, switching...", error=True)
-            self._failover()
+            self._failover_or_report_network()
         elif self._failures % OUTAGE_RETRY_EVERY == 0:
-            self._failover()
+            self._failover_or_report_network()
         return False
 
     # ----- internals -------------------------------------------------
@@ -193,6 +243,17 @@ class HealthMonitor(object):
                 return True
         return False
 
+    def _traffic_is_active(self):
+        if self.control is None or not hasattr(self.control, "traffic_total"):
+            return False
+        total = self.control.traffic_total()
+        if total is None:
+            return False
+        active = (self._last_traffic_total is not None and
+                  total > self._last_traffic_total)
+        self._last_traffic_total = total
+        return active
+
     def _observe_selection(self):
         """Notify when the engine's urltest picked a different outbound."""
         if self.control is None:
@@ -205,17 +266,28 @@ class HealthMonitor(object):
                         % (self._last_selected, current))
         self._last_selected = current
 
+    def _failover_or_report_network(self):
+        if self._failover():
+            return
+        if self.direct_probe():
+            self.notify("All proxy servers unreachable", error=True)
+        else:
+            self.log("health: direct network check failed; not switching", "warn")
+            self.notify("Internet connection unavailable", error=True)
+
     def _failover(self):
         ctl = self.control
         if ctl is None:
-            return
+            return False
         if not self.auto_failover:
-            return
+            return False
         members = ctl.members()
         current = ctl.current()
         old_effective = ctl.effective()
         if members:
-            ordered = [m for m in members if m != current]
+            auto_tag = getattr(ctl, "auto_tag", None)
+            ordered = [m for m in members
+                       if m != current and m != auto_tag][:3]
             for candidate in ordered:
                 if not ctl.select(candidate):
                     continue
@@ -225,12 +297,12 @@ class HealthMonitor(object):
                     self._failures = 0
                     new_effective = ctl.effective() or candidate
                     self._last_selected = new_effective
-                    self.notify("Switched: %s -> %s"
+                    self.notify("Auto-switch: %s -> %s"
                                 % (old_effective or current, new_effective))
-                    return
+                    return True
             if current:
                 ctl.select(current)
-            self.notify("All proxy servers unreachable", error=True)
+            return False
         elif hasattr(ctl, "restart"):
             self.log("health: restarting engine to re-evaluate outbounds",
                      "warn")
@@ -240,5 +312,7 @@ class HealthMonitor(object):
                 self._down = False
                 self._failures = 0
                 self.notify("Proxy connectivity restored")
+                return True
             else:
-                self.notify("All proxy servers unreachable", error=True)
+                return False
+        return False

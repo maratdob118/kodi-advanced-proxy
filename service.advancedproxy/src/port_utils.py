@@ -18,12 +18,18 @@ def port_in_use(port, host=DEFAULT_HOST):
     A bind() probe is used: binding the loopback address fails if ANY process
     holds the port (on 0.0.0.0 or on 127.0.0.1), which covers both a local
     engine and a LAN-exposed one.
+
+    SO_REUSEADDR is left ON (the platform default for listeners, and what
+    the Go engines use): a port held only by TIME_WAIT leftovers of a just
+    killed engine must report free, otherwise the addon falls back to
+    another port for a full TCP timewait window even though the engine
+    itself could bind immediately.
     """
     if not (0 < port < 65536):
         return True
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((host, port))
         return False
     except OSError:

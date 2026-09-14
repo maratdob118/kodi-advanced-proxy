@@ -791,6 +791,7 @@ class _FakeGroupControl(object):
         self.working = set(working)
         self.now = self._members[0] if self._members else None
         self.selections = []
+        self.total = None
 
     def current(self):
         return self.now
@@ -806,6 +807,9 @@ class _FakeGroupControl(object):
         self.selections.append(tag)
         return True
 
+    def traffic_total(self):
+        return self.total
+
 
 class TestHealthMonitor(unittest.TestCase):
     def _monitor(self, control=None, working=True, **kw):
@@ -815,7 +819,8 @@ class TestHealthMonitor(unittest.TestCase):
             port=1080, test_url="https://x/204", control=control,
             notify=lambda msg, error=False: notes.append((msg, error)),
             logger=lambda msg, level="info": logs.append((level, msg)),
-            interval=30, fail_threshold=2, sleeper=lambda s: None)
+            interval=30, fail_threshold=1, sleeper=lambda s: None,
+            direct_probe=lambda: True)
         args.update(kw)
         mon = health.HealthMonitor(**args)
         ctl = control
@@ -834,26 +839,30 @@ class TestHealthMonitor(unittest.TestCase):
         self.assertEqual(notes, [])
         self.assertFalse(mon._down)
 
-    def test_single_failure_below_threshold_stays_quiet(self):
+    def test_failed_traffic_probe_immediately_starts_failover(self):
         mon, notes = self._monitor(working=False)
         self.assertFalse(mon.check())
-        self.assertEqual(notes, [])
-        self.assertFalse(mon._down)
+        self.assertIn(("No internet via proxy, switching...", True), notes)
+        self.assertTrue(mon._down)
 
     def test_sustained_failure_notifies_outage_and_failover(self):
         ctl = _FakeGroupControl(["A", "B", "C"], working={"B"})
         mon, notes = self._monitor(control=ctl)
-        mon.check()
-        mon.check()  # threshold reached -> failover walks A(dead) B(alive)
+        mon.check()  # failover walks A(dead) B(alive)
         self.assertEqual(ctl.now, "B")
         self.assertIn(("No internet via proxy, switching...", True), notes)
-        self.assertIn(("Switched: A -> B", False), notes)
+        self.assertIn(("Auto-switch: A -> B", False), notes)
         self.assertFalse(mon._down)
+
+    def test_failover_tests_at_most_three_real_candidates(self):
+        ctl = _FakeGroupControl(["A", "B", "C", "D", "E"], working={"D"})
+        mon, _ = self._monitor(control=ctl)
+        self.assertFalse(mon.check())
+        self.assertEqual(ctl.selections, ["B", "C", "D"])
 
     def test_all_dead_restores_original_and_reports(self):
         ctl = _FakeGroupControl(["A", "B"], working=set())
         mon, notes = self._monitor(control=ctl)
-        mon.check()
         mon.check()
         self.assertEqual(ctl.now, "A", "original selection must be restored")
         self.assertIn(("All proxy servers unreachable", True), notes)
@@ -862,7 +871,6 @@ class TestHealthMonitor(unittest.TestCase):
     def test_recovery_notifies(self):
         ctl = _FakeGroupControl(["A"], working=set())
         mon, notes = self._monitor(control=ctl)
-        mon.check()
         mon.check()
         self.assertTrue(mon._down)
         ctl.working.add("A")
@@ -893,22 +901,37 @@ class TestHealthMonitor(unittest.TestCase):
         self.assertIsNone(mon.tick(now=1010))
         self.assertTrue(mon.tick(now=1031))
 
-    def test_fallback_urls_tried(self):
+    def test_uses_a_large_traffic_probe(self):
         seen = []
         mon, _ = self._monitor()
-        mon.fetch = lambda url, port: seen.append(url) or \
-            url == health.FALLBACK_URLS[0]
+        mon.fetch = lambda url, port: seen.append(url) or True
         self.assertTrue(mon.check())
-        self.assertEqual(seen[0], "https://x/204")
-        self.assertEqual(seen[1], health.FALLBACK_URLS[0])
+        self.assertEqual(seen, [health.PROBE_URL])
+        self.assertIn("bytes=%d" % health.PROBE_BYTES, health.PROBE_URL)
 
     def test_auto_failover_disabled_keeps_selection(self):
         ctl = _FakeGroupControl(["A", "B"], working={"B"})
         mon, notes = self._monitor(control=ctl, auto_failover=False)
         mon.check()
-        mon.check()
         self.assertEqual(ctl.now, "A")
         self.assertIn(("No internet via proxy, switching...", True), notes)
+
+    def test_active_proxy_traffic_skips_large_probe(self):
+        ctl = _FakeGroupControl(["A"], working={"A"})
+        ctl.total = 100
+        mon, notes = self._monitor(control=ctl)
+        self.assertTrue(mon.check())  # First total establishes the baseline.
+        ctl.working.clear()
+        ctl.total = 100 + health.PROBE_BYTES
+        self.assertTrue(mon.check())
+        self.assertEqual(notes, [])
+
+    def test_failover_checks_direct_network_before_reporting_candidates_down(self):
+        ctl = _FakeGroupControl(["A", "B"], working=set())
+        mon, notes = self._monitor(control=ctl, direct_probe=lambda: False)
+        self.assertFalse(mon.check())
+        self.assertIn(("Internet connection unavailable", True), notes)
+        self.assertNotIn(("All proxy servers unreachable", True), notes)
 
 
 class TestClashGroupControl(unittest.TestCase):
