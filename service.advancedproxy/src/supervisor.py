@@ -91,6 +91,20 @@ class ProxySupervisor(object):
                         error=True)
         return port
 
+    def _cleanup_before_port_selection(self):
+        """Wait briefly for a removed orphan to release the configured port."""
+        stale = self.bin.kill_stale()
+        if not stale:
+            return
+        preferred = int(self.settings.get("local_port", 1080))
+        ports = (preferred, preferred + 1) if self.settings.get("engine") == "xray" else (preferred,)
+        deadline = time.monotonic() + 3.0
+        while any(port_utils.port_in_use(port) for port in ports):
+            if time.monotonic() >= deadline:
+                self.log("configured port still occupied after stale engine cleanup", "warn")
+                return
+            time.sleep(0.1)
+
     def _build_settings(self):
         """Settings copy with the effective port injected for config gen."""
         s = dict(self.settings)
@@ -201,7 +215,7 @@ class ProxySupervisor(object):
         # Kill leftovers from a previous run BEFORE picking a port: a stale
         # engine still holding the configured port must not push us onto a
         # fallback port.
-        self.bin.kill_stale()
+        self._cleanup_before_port_selection()
         self._resolve_effective_port()
         return self._start_with_port()
 
@@ -259,7 +273,7 @@ class ProxySupervisor(object):
         if was_running:
             self.bin.stop(port=self.effective_port)
         self.bin = self._make_binary_manager()
-        self.bin.kill_stale()
+        self._cleanup_before_port_selection()
         self._resolve_effective_port()
         if was_running or (self.settings.get("autostart") and self.store.enabled()):
             self._start_with_port()

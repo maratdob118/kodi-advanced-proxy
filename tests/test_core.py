@@ -1131,6 +1131,15 @@ class TestHelpers(unittest.TestCase):
 
 
 class TestBinaryManager(unittest.TestCase):
+    def test_stale_pid_requires_managed_executable_not_substring(self):
+        with tempfile.TemporaryDirectory() as addon, tempfile.TemporaryDirectory() as work:
+            bm = binary_manager.BinaryManager(addon, work, platform_override="linux_x64")
+            path = bm.work_binary
+            with patch.object(bm, "_pid_cmdline", return_value=["python3", "--note=" + path]):
+                self.assertFalse(bm._pid_is_ours(123, bm._managed_paths()))
+            with patch.object(bm, "_pid_cmdline", return_value=[path, "run", "-c"]):
+                self.assertTrue(bm._pid_is_ours(123, bm._managed_paths()))
+
     def _orphan(self, bm):
         """Spawn a real process whose cmdline contains bm.work_binary."""
         os.makedirs(bm.work_dir_bin, exist_ok=True)
@@ -1455,6 +1464,23 @@ class TestSupervisorPortFallback(unittest.TestCase):
         with open(self.sup.config_path) as f:
             cfg = json.load(f)
         self.assertEqual(cfg["inbounds"][0]["listen_port"], 1080)
+
+    def test_stale_engine_port_release_precedes_port_selection(self):
+        checks = iter([True, True, False, False, False])
+        self.sup.bin.kill_stale = lambda: 1
+        with patch.object(port_utils, "port_in_use", side_effect=lambda port, *args: next(checks)), \
+                patch.object(supervisor.time, "sleep") as sleep:
+            self.assertTrue(self.sup.start())
+        self.assertEqual(self.sup.effective_port, 1080)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_foreign_listener_is_not_killed_and_uses_fallback(self):
+        self.sup.bin.kill_stale = lambda: 0
+        with patch.object(port_utils, "port_in_use", side_effect=lambda port, *args: port == 1080), \
+                patch.object(supervisor.time, "sleep") as sleep:
+            self.assertTrue(self.sup.start())
+        self.assertEqual(self.sup.effective_port, 1081)
+        sleep.assert_not_called()
 
     def test_tick_never_resolves_port_or_rewrites_config(self):
         self.assertTrue(self.sup.start())

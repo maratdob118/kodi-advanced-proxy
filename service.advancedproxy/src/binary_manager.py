@@ -102,7 +102,8 @@ class BinaryManager(object):
     def _pid_cmdline(pid):
         try:
             with open("/proc/%d/cmdline" % pid, "rb") as f:
-                return f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+                return [arg.decode("utf-8", "replace")
+                        for arg in f.read().split(b"\0") if arg]
         except OSError:
             return None
 
@@ -110,7 +111,10 @@ class BinaryManager(object):
         cmdline = self._pid_cmdline(pid)
         if cmdline is None:
             return False
-        return any(p in cmdline for p in paths)
+        # Match executable arguments, never an arbitrary substring (such as
+        # the path of our binary in an unrelated process's command line).
+        return any(os.path.realpath(arg) == os.path.realpath(p)
+                   for arg in cmdline[:2] for p in paths)
 
     def _stale_pids(self):
         """PIDs of engine processes from previous addon runs.
@@ -175,6 +179,16 @@ class BinaryManager(object):
                 os.kill(pid, signal.SIGKILL)
             except OSError:
                 pass
+        # SIGKILL is asynchronous. Do not let the supervisor probe the port
+        # while the old process is still exiting and still owns its listener.
+        deadline = time.monotonic() + 2.0
+        while remaining and time.monotonic() < deadline:
+            remaining = [pid for pid in remaining
+                         if self._pid_is_ours(pid, paths)]
+            if remaining:
+                time.sleep(0.1)
+        if remaining:
+            self.log("stale engine still alive: %s" % remaining, "warn")
         try:
             os.remove(self.pidfile)
         except OSError:
