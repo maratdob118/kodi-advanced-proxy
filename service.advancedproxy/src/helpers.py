@@ -35,6 +35,10 @@ _DEFAULTS = {
     "dns_query_strategy": "",
     "health_check": "true",
     "health_interval": "30",
+    "auto_check": "true",
+    "test_urls": "https://www.gstatic.com/generate_204",
+    "probe_url": "https://speed.cloudflare.com/__down?bytes={n}",
+    "debug": "false",
     "direct_torrent": "false",
     "geoip_url": "https://github.com/runetfreedom/russia-blocked-geoip/releases/latest/download/geoip.dat",
     "geosite_url": "",
@@ -104,6 +108,17 @@ def get_settings(reader=None):
         preset_id = dns_utils.CUSTOM_PRESET
     dns_server = dns_utils.preset_server(preset_id, s("dns_server"))
 
+    # test_urls supersedes the legacy single test_url, but an install that
+    # customized test_url before test_urls existed keeps its value as the
+    # (single) check target.
+    urls_raw = raw.get("test_urls")
+    if urls_raw and (urls_raw != _DEFAULTS["test_urls"]
+                     or _setting_persisted("test_urls")):
+        urls_source = urls_raw
+    else:
+        urls_source = s("test_url")
+    test_urls = parse_test_urls(urls_source)
+
     return {
         "engine": _ENGINES.get(str(s("engine")), "sing-box"),
         "autostart": b("autostart"),
@@ -125,6 +140,12 @@ def get_settings(reader=None):
                                                   s("dns_query_strategy")),
         "health_check": b("health_check"),
         "health_interval": i("health_interval"),
+        "auto_check": b("auto_check"),
+        "test_urls": test_urls,
+        "test_url": test_urls[0],
+        "probe_url": (str(raw.get("probe_url") or "").strip()
+                      or _DEFAULTS["probe_url"]),
+        "debug": b("debug"),
         "direct_torrent": b("direct_torrent"),
         "geoip_url": s("geoip_url"),
         "geosite_url": s("geosite_url"),
@@ -260,6 +281,58 @@ def log_path():
 
 def state_path():
     return os.path.join(profile_dir(), "state.json")
+
+
+def parse_test_urls(value):
+    """Split a settings string into check URLs (comma/space separated).
+
+    Always returns a non-empty list; garbage falls back to the default.
+    """
+    parts = []
+    for chunk in str(value or "").replace(",", " ").split():
+        chunk = chunk.strip()
+        if chunk.startswith("http://") or chunk.startswith("https://"):
+            parts.append(chunk)
+    if not parts:
+        parts = [_DEFAULTS["test_urls"]]
+    return parts
+
+
+def supervision_path(base_dir=None):
+    return os.path.join(base_dir or profile_dir(), "supervision.json")
+
+
+def load_supervision(base_dir=None):
+    """Supervised-manual state: {"supervised": bool, "preferred": tag|None}."""
+    try:
+        with open(supervision_path(base_dir), "r",
+                  encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {"supervised": False, "preferred": None}
+    if not isinstance(data, dict):
+        return {"supervised": False, "preferred": None}
+    return {"supervised": bool(data.get("supervised", False)),
+            "preferred": data.get("preferred")}
+
+
+def save_supervision(data, base_dir=None):
+    """Persist supervised-manual state; returns True on success."""
+    try:
+        path = supervision_path(base_dir)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"supervised": bool(data.get("supervised", False)),
+                       "preferred": data.get("preferred")}, f)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
+def clear_supervision(base_dir=None):
+    return save_supervision({"supervised": False, "preferred": None},
+                            base_dir)
 
 
 def read_proxy_state():

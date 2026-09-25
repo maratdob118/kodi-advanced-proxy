@@ -106,9 +106,33 @@
                         <step>10</step>
                         <maximum>600</maximum>
                     </constraints>
-                    <control type="slider" format="integer">
-                        <popup>true</popup>
+                    <control type="edit" format="integer">
                         <heading>32271</heading>
+                    </control>
+                </setting>
+                <setting id="auto_check" type="boolean" label="32273" help="32273">
+                    <level>0</level>
+                    <default>true</default>
+                    <control type="toggle"/>
+                </setting>
+                <setting id="test_urls" type="string" label="32274" help="32274">
+                    <level>1</level>
+                    <default>https://www.gstatic.com/generate_204</default>
+                    <constraints>
+                        <allowempty>false</allowempty>
+                    </constraints>
+                    <control type="edit" format="string">
+                        <heading>32274</heading>
+                    </control>
+                </setting>
+                <setting id="probe_url" type="string" label="32275" help="32275">
+                    <level>2</level>
+                    <default>https://speed.cloudflare.com/__down?bytes={n}</default>
+                    <constraints>
+                        <allowempty>false</allowempty>
+                    </constraints>
+                    <control type="edit" format="string">
+                        <heading>32275</heading>
                     </control>
                 </setting>
             </group>
@@ -134,6 +158,11 @@
                 <setting id="notify" type="boolean" label="32122" help="32123">
                     <level>0</level>
                     <default>true</default>
+                    <control type="toggle"/>
+                </setting>
+                <setting id="debug" type="boolean" label="32272" help="32272">
+                    <level>1</level>
+                    <default>false</default>
                     <control type="toggle"/>
                 </setting>
                 <setting id="auto_configure_integration" type="boolean" label="32300" help="32301">

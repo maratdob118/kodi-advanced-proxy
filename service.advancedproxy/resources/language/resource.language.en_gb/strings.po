@@ -487,3 +487,27 @@ msgstr ""
 msgctxt "#32271"
 msgid "Health check interval (seconds)"
 msgstr ""
+
+msgctxt "#32272"
+msgid "Debug mode (verbose engine logging)"
+msgstr ""
+
+msgctxt "#32273"
+msgid "Automatic background checks"
+msgstr ""
+
+msgctxt "#32274"
+msgid "Availability check URLs (space separated)"
+msgstr ""
+
+msgctxt "#32275"
+msgid "Traffic probe URL ({n} = bytes)"
+msgstr ""
+
+msgctxt "#32276"
+msgid "Temporary manual: %s (will switch if down)"
+msgstr ""
+
+msgctxt "#32277"
+msgid "Preferred profile is back: %s"
+msgstr ""

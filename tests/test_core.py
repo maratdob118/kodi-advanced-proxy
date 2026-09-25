@@ -786,12 +786,14 @@ class TestDirectoryGrouping(unittest.TestCase):
 class _FakeGroupControl(object):
     """In-memory urltest group: `working` holds outbound tags that pass."""
 
-    def __init__(self, members, working=()):
+    def __init__(self, members, working=(), delays=None):
         self._members = list(members)
         self.working = set(working)
         self.now = self._members[0] if self._members else None
         self.selections = []
         self.total = None
+        self.auto_tag = None
+        self._delays = dict(delays or {})
 
     def current(self):
         return self.now
@@ -809,6 +811,12 @@ class _FakeGroupControl(object):
 
     def traffic_total(self):
         return self.total
+
+    def effective_traffic_total(self, effective):
+        return self.total
+
+    def delays(self):
+        return dict(self._delays)
 
 
 class TestHealthMonitor(unittest.TestCase):
@@ -906,8 +914,91 @@ class TestHealthMonitor(unittest.TestCase):
         mon, _ = self._monitor()
         mon.fetch = lambda url, port: seen.append(url) or True
         self.assertTrue(mon.check())
-        self.assertEqual(seen, [health.PROBE_URL])
+        self.assertEqual(seen, ["https://x/204", mon.data_url])
         self.assertIn("bytes=%d" % health.PROBE_BYTES, health.PROBE_URL)
+
+    def test_two_stages_liveness_then_data(self):
+        def fetch(url, port):
+            if url == "https://x/204":
+                return True  # liveness passes...
+            return False  # ...but the data transfer fails (DPI case)
+        mon, notes = self._monitor()
+        mon.fetch = fetch
+        self.assertFalse(mon.check())
+        self.assertIn(("No internet via proxy, switching...", True), notes)
+
+    def test_liveness_urls_tried_in_order(self):
+        seen = []
+        mon, _ = self._monitor(liveness_urls=["https://a/204",
+                                              "https://b/204"])
+
+        def fetch(url, port):
+            seen.append(url)
+            return url == "https://b/204" or url == mon.data_url
+        mon.fetch = fetch
+        self.assertTrue(mon.check())
+        self.assertEqual(seen, ["https://a/204", "https://b/204",
+                                mon.data_url])
+
+    def test_custom_probe_url_template(self):
+        mon, _ = self._monitor(
+            probe_url="https://example.com/down?size={n}")
+        self.assertIn("size=%d" % health.PROBE_BYTES, mon.data_url)
+
+    def test_liveness_accepts_empty_204_body(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/empty":
+                    self.send_response(204)
+                    self.end_headers()
+                else:
+                    self.send_response(500)
+                    self.end_headers()
+                    self.wfile.write(b"boom")
+
+            def log_message(self, *a):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), _Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            port = server.server_address[1]
+            import urllib.request
+            real_build = urllib.request.build_opener
+
+            def _proxied(*args, **kwargs):
+                # Bypass the proxy env: talk directly to the local server.
+                return real_build(urllib.request.ProxyHandler({}))
+
+            with patch.object(urllib.request, "build_opener",
+                              side_effect=_proxied):
+                base = "http://127.0.0.1:%d" % port
+                self.assertTrue(health._liveness_fetch(base + "/empty",
+                                                       1080))
+                self.assertFalse(health._liveness_fetch(base + "/dead",
+                                                        1080))
+                self.assertFalse(health._liveness_fetch(
+                    "http://127.0.0.1:1/unreachable", 1080))
+        finally:
+            server.shutdown()
+
+    def test_own_probe_bytes_do_not_self_mask(self):
+        ctl = _FakeGroupControl(["A"], working={"A"})
+        ctl.total = 0
+        mon, _ = self._monitor(control=ctl)
+
+        def fetch(url, port):
+            ctl.total += health.PROBE_BYTES  # probe traffic accumulates
+            return True
+        mon.fetch = fetch
+        self.assertTrue(mon.check())
+        first_total = ctl.total
+        self.assertGreater(first_total, 0)
+        self.assertTrue(mon.check())  # must probe again, not skip
+        self.assertGreater(ctl.total, first_total)
 
     def test_auto_failover_disabled_keeps_selection(self):
         ctl = _FakeGroupControl(["A", "B"], working={"B"})
@@ -932,6 +1023,91 @@ class TestHealthMonitor(unittest.TestCase):
         self.assertFalse(mon.check())
         self.assertIn(("Internet connection unavailable", True), notes)
         self.assertNotIn(("All proxy servers unreachable", True), notes)
+
+    def test_startup_grace_skips_first_failover(self):
+        ctl = _FakeGroupControl(["A", "B"], working=set())
+        mon, notes = self._monitor(control=ctl, startup_grace=1)
+        self.assertFalse(mon.check())  # warm-up: no outage, no walking
+        self.assertEqual(notes, [])
+        self.assertEqual(ctl.selections, [])
+        self.assertFalse(mon.check())  # second failure: real failover
+        self.assertIn(("No internet via proxy, switching...", True), notes)
+        self.assertEqual(ctl.selections, ["B", "A"])
+
+    def test_offline_skips_candidate_walking(self):
+        ctl = _FakeGroupControl(["A", "B", "C"], working=set())
+        mon, _ = self._monitor(control=ctl, direct_probe=lambda: False)
+        self.assertFalse(mon.check())
+        self.assertEqual(ctl.selections, [])
+
+    def test_tiny_traffic_growth_does_not_mask_outage(self):
+        ctl = _FakeGroupControl(["A"], working=set())
+        ctl.total = 100
+        mon, notes = self._monitor(control=ctl)
+        self.assertFalse(mon.check())  # baseline + failed probe -> outage
+        ctl.total = 100 + 1024  # keep-alive bytes only
+        self.assertFalse(mon.check())
+        self.assertIn(("No internet via proxy, switching...", True), notes)
+
+    def test_failover_prefers_better_delay_over_list_order(self):
+        ctl = _FakeGroupControl(["A", "B", "C"], working={"B", "C"},
+                                delays={"B": 900, "C": 60})
+        mon, _ = self._monitor(control=ctl)
+        mon.check()
+        self.assertEqual(ctl.now, "C")
+        self.assertEqual(ctl.selections, ["C"])
+
+    def test_repeated_failures_demote_flaky_candidate(self):
+        ctl = _FakeGroupControl(["A", "B", "C"], working={"C"})
+        mon, _ = self._monitor(control=ctl)
+        mon.check()  # B fails, C wins
+        self.assertEqual(ctl.now, "C")
+        ctl.now = "A"
+        ctl.working = {"B"}
+        mon.check()  # now B wins despite earlier failure of... C fails
+        self.assertEqual(ctl.now, "B")
+
+    def test_pinned_selector_returns_to_automatic(self):
+        ctl = _FakeGroupControl(["proxy-auto", "A", "B"], working={"B"})
+        ctl.auto_tag = "proxy-auto"
+        ctl.now = "A"
+        mon, notes = self._monitor(control=ctl, return_after=2)
+        mon.check()  # outage -> pin B
+        self.assertEqual(ctl.now, "B")
+        self.assertEqual(mon.pinned_tag, "B")
+        ctl.working.add("proxy-auto")  # automatic choice healthy again
+        mon.check()  # healthy while pinned (1)
+        mon.check()  # healthy while pinned (2) -> try auto
+        self.assertIn("Auto: back to automatic selection", notes[-1][0])
+        self.assertIsNone(mon.pinned_tag)
+
+    def test_scorer_ranks_evidence_before_unknown(self):
+        scorer = health.AutoScorer()
+        scorer.record_failure("flaky")
+        scorer.record_failure("flaky")
+        self.assertEqual(scorer.ranked(["flaky", "fresh"], {"fresh": 120})[0],
+                         "fresh")
+
+    def test_supervised_failover_tries_preferred_first(self):
+        ctl = _FakeGroupControl(["A", "B", "C"], working={"B", "C"})
+        ctl.now = "A"
+        mon, _ = self._monitor(control=ctl, preferred_tag="C")
+        mon.check()
+        self.assertEqual(ctl.now, "C")
+        self.assertEqual(ctl.selections, ["C"])
+
+    def test_supervised_restores_preferred_when_back(self):
+        ctl = _FakeGroupControl(["A", "B", "C"], working={"B"})
+        ctl.now = "A"
+        mon, notes = self._monitor(control=ctl, preferred_tag="C",
+                                   return_after=2)
+        mon.check()  # A down -> C probed first (fails), B wins
+        self.assertEqual(ctl.now, "B")
+        ctl.working.add("C")
+        mon.check()  # healthy on B (1)
+        mon.check()  # healthy on B (2) -> restore attempt selects C
+        self.assertEqual(ctl.now, "C")
+        self.assertIn(("Preferred profile is back: C", False), notes)
 
 
 class TestClashGroupControl(unittest.TestCase):
@@ -1018,13 +1194,58 @@ class TestSupervisorHealthWiring(unittest.TestCase):
             self.assertIsInstance(mon.control, health.RestartControl)
             self.assertTrue(mon.auto_failover)
 
-    def test_manual_mode_no_auto_failover(self):
+    def test_hard_manual_has_no_background_monitor(self):
         with tempfile.TemporaryDirectory() as tmp:
             sup = self._supervisor(tmp, mode="manual")
             sup.effective_port = 1080
             sup.clash_port = 1180
+            self.assertIsNone(sup._make_health_monitor())
+
+    def test_supervised_manual_keeps_failover_and_preferred(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            helpers.save_supervision({"supervised": True,
+                                      "preferred": "B"}, tmp)
+            sup = self._supervisor(tmp, mode="manual")
+            sup.effective_port = 1080
+            sup.clash_port = 1180
             mon = sup._make_health_monitor()
-            self.assertFalse(mon.auto_failover)
+            self.assertIsNotNone(mon)
+            self.assertTrue(mon.auto_failover)
+            self.assertEqual(mon.preferred_tag, "B")
+            self.assertIsNone(mon.control.auto_tag)
+
+    def test_monitor_none_when_auto_check_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp, auto_check=False)
+            self.assertIsNone(sup._make_health_monitor())
+
+    def test_error_log_also_notifies(self):
+        notes = []
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp)
+            sup.notify = lambda msg, error=False: notes.append((msg, error))
+            sup.log("boom", level="error")
+            sup.log("fine")
+        self.assertIn(("boom", True), notes)
+        self.assertEqual(len(notes), 1)
+
+    def test_engine_log_rotated_on_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp)
+            path = os.path.join(tmp, "engine.log")
+            with open(path, "wb") as f:
+                f.write(b"x" * (5 * 1024 * 1024))
+            sup._rotate_engine_log()
+            self.assertLess(os.path.getsize(path), 2 * 1024 * 1024)
+
+    def test_debug_off_forces_quiet_engine(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp, log_level="info", debug=False)
+            sup.effective_port = 1080
+            self.assertEqual(sup._build_settings()["log_level"], "warn")
+            sup2 = self._supervisor(tmp, log_level="info", debug=True)
+            sup2.effective_port = 1080
+            self.assertEqual(sup2._build_settings()["log_level"], "info")
 
     def test_clash_port_reserved_for_singbox(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1072,6 +1293,36 @@ class TestHelpers(unittest.TestCase):
         self.assertIs(s["notify"], False)
         self.assertEqual(s["local_port"], 8080)
         self.assertEqual(s["log_level"], "warn")
+
+    def test_probe_settings_defaults(self):
+        s = helpers.get_settings(reader=lambda: {})
+        self.assertIs(s["debug"], False)
+        self.assertIs(s["auto_check"], True)
+        self.assertEqual(s["test_urls"],
+                         ["https://www.gstatic.com/generate_204"])
+        self.assertEqual(s["test_url"], "https://www.gstatic.com/generate_204")
+        self.assertIn("{n}", s["probe_url"])
+
+    def test_test_urls_parsing_and_legacy_fallback(self):
+        s = helpers.get_settings(
+            reader=lambda: {"test_urls": "https://a/204,https://b/204  ftp://x"})
+        self.assertEqual(s["test_urls"], ["https://a/204", "https://b/204"])
+        self.assertEqual(s["test_url"], "https://a/204")
+        s = helpers.get_settings(reader=lambda: {"test_url": "https://c/204"})
+        self.assertEqual(s["test_urls"], ["https://c/204"])
+        self.assertEqual(helpers.parse_test_urls("garbage"), [
+            "https://www.gstatic.com/generate_204"])
+
+    def test_supervision_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(helpers.load_supervision(tmp),
+                             {"supervised": False, "preferred": None})
+            self.assertTrue(helpers.save_supervision(
+                {"supervised": True, "preferred": "A"}, tmp))
+            self.assertEqual(helpers.load_supervision(tmp),
+                             {"supervised": True, "preferred": "A"})
+            helpers.clear_supervision(tmp)
+            self.assertFalse(helpers.load_supervision(tmp)["supervised"])
 
     def test_direct_mode_normalization(self):
         s = helpers.get_settings(reader=lambda: {"mode": "2"})
@@ -1543,16 +1794,22 @@ class TestSubscriptionUiContract(unittest.TestCase):
         self.assertIn("helpers.pick_reachable", src,
                       "activation must use the reachability probe")
 
-    def test_auto_activation_does_not_switch_to_manual(self):
+    def test_auto_activation_uses_supervised_temporary_manual(self):
         path = os.path.join(HERE, "..", "service.advancedproxy", "default.py")
         with open(path) as f:
             src = f.read()
         start = src.index("def _action_activate_reachable(")
         end = src.index("\ndef ", start + 1)
         body = src[start:end]
-        self.assertNotIn('setSetting("mode", "1")', body,
-                         "auto-mode activation must stay in auto, not "
-                         "switch to manual")
+        self.assertIn('setSetting("mode", "1")', body,
+                      "auto-mode activation must flip to temporary manual")
+        self.assertIn("save_supervision", body,
+                      "auto-mode activation must arm supervision")
+        start = src.index("def _action_toggle_mode(")
+        end = src.index("\ndef ", start + 1)
+        toggle_body = src[start:end]
+        self.assertIn("clear_supervision", toggle_body,
+                      "explicit mode toggle must clear supervision")
 
     def test_subscription_click_defaults_to_refresh(self):
         path = os.path.join(HERE, "..", "service.advancedproxy", "default.py")

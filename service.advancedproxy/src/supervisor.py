@@ -13,8 +13,16 @@ import binary_manager
 import build_singbox
 import build_xray
 import health
+import helpers
 import port_utils
 import profiles
+
+LOG_ROTATE_BYTES = 4 * 1024 * 1024
+LOG_KEEP_BYTES = 1 * 1024 * 1024
+
+IDLE_PROBE_INTERVAL = 180
+AWAY_PROBE_INTERVAL = 3600
+
 
 def _default_log(msg, level="info"):
     pass
@@ -28,7 +36,8 @@ class ProxySupervisor(object):
     def __init__(self, settings, addon_dir, work_dir, logger=None, notify=None,
                  should_stop=None):
         self.settings = dict(settings)
-        self.log = logger or _default_log
+        self._logger = logger or _default_log
+        self.log = self._log
         self.notify = notify or _default_notify
         self.should_stop = should_stop or (lambda: False)
         self.addon_dir = addon_dir
@@ -50,6 +59,41 @@ class ProxySupervisor(object):
         self._shutting_down = False
         self._refreshing_subscriptions = False
         self.refresh_subscriptions = None  # injectable; real default set lazily
+        # Set by the outer loop (screensaver / idle time): overrides the
+        # configured health interval while the box is unattended.
+        self.health_interval_override = None
+
+    def _log(self, msg, level="info"):
+        """Log and surface every error as a toast notification."""
+        try:
+            self._logger(msg, level)
+        except Exception:
+            pass
+        if level == "error":
+            try:
+                self.notify(msg, error=True)
+            except Exception:
+                pass
+
+    def _rotate_engine_log(self):
+        """Cap engine.log growth (SD-card wear): keep the tail only."""
+        path = os.path.join(self.work_dir, "engine.log")
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return
+        if size <= LOG_ROTATE_BYTES:
+            return
+        try:
+            with open(path, "rb") as f:
+                f.seek(max(0, size - LOG_KEEP_BYTES))
+                tail = f.read()
+            with open(path, "wb") as f:
+                f.write(b"...truncated by log rotation...\n" + tail)
+            self._logger("rotated engine.log (%d -> %d bytes)"
+                         % (size, len(tail)))
+        except OSError as e:
+            self._logger("engine log rotation failed: %s" % e, "warn")
 
     def _make_binary_manager(self):
         return binary_manager.BinaryManager(
@@ -106,26 +150,53 @@ class ProxySupervisor(object):
             time.sleep(0.1)
 
     def _build_settings(self):
-        """Settings copy with the effective port injected for config gen."""
+        """Settings copy with the effective port injected for config gen.
+
+        Unless debug mode is on, the engine log level is forced to "warn":
+        per-connection info logging would otherwise grow engine.log without
+        bounds and wear SD cards.
+        """
         s = dict(self.settings)
         if self.effective_port:
             s["local_port"] = self.effective_port
         if self.clash_port:
             s["clash_api_port"] = self.clash_port
+        if not s.get("debug", False):
+            s["log_level"] = "warn"
         s["geo_paths"] = {"geoip": os.path.join(self.work_dir, "geoip.dat"),
                           "geosite": os.path.join(self.work_dir, "geosite.dat")}
         return s
 
+    def _supervision(self):
+        """Supervised-manual state written by the UI on profile picks."""
+        try:
+            return helpers.load_supervision(self.work_dir)
+        except Exception:
+            return {"supervised": False, "preferred": None}
+
     def _make_health_monitor(self):
-        """Connectivity monitor for proxied modes; None when disabled."""
+        """Connectivity monitor for supervised modes; None when disabled.
+
+        Hard manual gets no background probes (on-demand latency test in
+        the UI is enough); supervised temporary manual keeps failover plus
+        preferred-profile restore.
+        """
         if not self.settings.get("health_check", True):
             return None
-        if self.settings.get("mode") == "direct":
+        if not self.settings.get("auto_check", True):
             return None
+        mode = self.settings.get("mode")
+        if mode == "direct":
+            return None
+        supervision = self._supervision()
+        preferred = None
+        if mode == "manual":
+            if not supervision.get("supervised"):
+                return None
+            preferred = supervision.get("preferred")
         engine = self.settings.get("engine", "sing-box")
         if engine == "sing-box":
-            auto_tag = ("proxy-auto"
-                        if self.settings.get("mode") == "urltest" else None)
+            auto_tag = ("proxy-auto" if mode == "urltest" else None)
             control = (health.ClashGroupControl(self.clash_port,
                                                 auto_tag=auto_tag)
                        if self.clash_port else None)
@@ -133,6 +204,9 @@ class ProxySupervisor(object):
             control = health.RestartControl(
                 lambda: self.bin.restart(self.config_path,
                                          port=self.effective_port))
+        test_urls = self.settings.get("test_urls") or None
+        if isinstance(test_urls, str):
+            test_urls = [test_urls]
         return health.HealthMonitor(
             port=self.effective_port or int(self.settings.get("local_port", 1080)),
             test_url=self.settings.get("test_url"),
@@ -140,7 +214,11 @@ class ProxySupervisor(object):
             notify=self.notify,
             logger=self.log,
             interval=int(self.settings.get("health_interval", 30) or 30),
-            auto_failover=self.settings.get("mode") == "urltest")
+            auto_failover=(mode == "urltest" or bool(preferred)),
+            liveness_urls=test_urls,
+            probe_url=self.settings.get("probe_url"),
+            preferred_tag=preferred,
+            startup_grace=2)
 
     def build_and_write_config(self):
         enabled = self.store.enabled()
@@ -215,6 +293,7 @@ class ProxySupervisor(object):
         # Kill leftovers from a previous run BEFORE picking a port: a stale
         # engine still holding the configured port must not push us onto a
         # fallback port.
+        self._rotate_engine_log()
         self._cleanup_before_port_selection()
         self._resolve_effective_port()
         return self._start_with_port()
@@ -296,6 +375,11 @@ class ProxySupervisor(object):
             self._watch_active_change()
             if self.health is not None:
                 try:
+                    if self.health_interval_override:
+                        self.health.interval = self.health_interval_override
+                    else:
+                        self.health.interval = int(
+                            self.settings.get("health_interval", 30) or 30)
                     self.health.tick(now)
                 except Exception as e:
                     self.log("health check error: %s" % e, "warn")

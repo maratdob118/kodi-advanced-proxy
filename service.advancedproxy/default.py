@@ -200,7 +200,13 @@ def _action_clear(handle):
 
 
 def _action_activate_reachable(handle, tag):
-    """Activate TAG only when reachable; otherwise offer the next one."""
+    """Activate TAG only when reachable; otherwise offer the next one.
+
+    A pick in auto mode flips to supervised temporary manual: the profile
+    is pinned, but the service keeps checking the others and moves away
+    (and back) if the preferred one goes down. An explicit mode toggle
+    always means hard manual with no supervision.
+    """
     store = _store()
     tag, err = helpers.pick_reachable(store.profiles, tag)
     if err:
@@ -208,14 +214,21 @@ def _action_activate_reachable(handle, tag):
         _finish_action(handle)
         return
     if _mode() == "manual":
+        supervision = helpers.load_supervision()
         if store.set_active(tag):
+            if supervision.get("supervised"):
+                helpers.save_supervision({"supervised": True,
+                                          "preferred": tag})
             _notify(_ls(32212) % tag)
         else:
             _notify(_ls(32219), error=True)
     else:
+        helpers.save_supervision({"supervised": True, "preferred": tag})
+        xbmcaddon.Addon(ADDON_ID).setSetting("mode", "1")
         if store.set_active(tag):
-            _notify(_ls(32221) % tag)
+            _notify(_ls(32276) % tag)
         else:
+            helpers.clear_supervision()
             _notify(_ls(32219), error=True)
     _finish_action(handle)
 
@@ -227,6 +240,7 @@ def _action_toggle_mode(handle):
     current_index = modes.index(current) if current in modes else 0
     next_index = (current_index + 1) % len(modes)
     addon.setSetting("mode", modes[next_index])
+    helpers.clear_supervision()
     mode_labels = [_ls(32108), _ls(32109), _ls(32251)]
     _notify(_ls(32220) % mode_labels[next_index])
     _finish_action(handle)

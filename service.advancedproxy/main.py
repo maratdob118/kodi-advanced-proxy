@@ -36,6 +36,25 @@ def _profiles_mtime(path):
         return 0
 
 
+def _idle_probe_interval():
+    """Background probe interval override for an unattended box.
+
+    Active viewing keeps the configured interval; a merely idle box is
+    checked every 3 minutes, and a screensaver (or 15+ minutes without
+    input) stretches checks to once an hour.
+    """
+    try:
+        if xbmc.getCondVisibility("System.ScreenSaverActive"):
+            return supervisor.AWAY_PROBE_INTERVAL
+        if xbmc.getGlobalIdleTime() >= 15 * 60 * 1000:
+            return supervisor.AWAY_PROBE_INTERVAL
+        if xbmc.getGlobalIdleTime() >= 2 * 60 * 1000:
+            return supervisor.IDLE_PROBE_INTERVAL
+    except Exception:
+        pass
+    return None
+
+
 def build_integration_manager(logger=None, notify=None):
     """IntegrationManager bound to the Kodi adapters from helpers.
 
@@ -235,6 +254,7 @@ def main():
                     started = sup.start()
                     _sync_integration(new_settings, started)
 
+            sup.health_interval_override = _idle_probe_interval()
             if sup.bin.is_running() or sup.store.enabled():
                 sup.tick()
         except Exception as e:
