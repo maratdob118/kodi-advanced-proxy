@@ -794,11 +794,15 @@ class _FakeGroupControl(object):
         self.total = None
         self.auto_tag = None
         self._delays = dict(delays or {})
+        # Outbound the engine's urltest would pick while on the auto group.
+        self.auto_effective = None
 
     def current(self):
         return self.now
 
     def effective(self):
+        if self.auto_tag and self.now == self.auto_tag and self.auto_effective:
+            return self.auto_effective
         return self.now
 
     def members(self):
@@ -1201,8 +1205,19 @@ class TestSupervisorHealthWiring(unittest.TestCase):
             sup.clash_port = 1180
             self.assertIsNone(sup._make_health_monitor())
 
+    def _write_profiles(self, tmp, tags):
+        path = os.path.join(tmp, "profiles.json")
+        with open(path, "w") as handle:
+            json.dump({"profiles": [{"tag": tag, "enabled": True,
+                                     "protocol": "vless", "server": "s",
+                                     "port": 443, "uri": "vless://%s" % tag}
+                                    for tag in tags],
+                       "active_tag": tags[0] if tags else None}, handle)
+        return path
+
     def test_supervised_manual_keeps_failover_and_preferred(self):
         with tempfile.TemporaryDirectory() as tmp:
+            self._write_profiles(tmp, ["A", "B"])
             helpers.save_supervision({"supervised": True,
                                       "preferred": "B"}, tmp)
             sup = self._supervisor(tmp, mode="manual")
@@ -1213,6 +1228,59 @@ class TestSupervisorHealthWiring(unittest.TestCase):
             self.assertTrue(mon.auto_failover)
             self.assertEqual(mon.preferred_tag, "B")
             self.assertIsNone(mon.control.auto_tag)
+
+    def test_supervised_preferred_gone_is_cleared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_profiles(tmp, ["A"])
+            helpers.save_supervision({"supervised": True,
+                                      "preferred": "GONE"}, tmp)
+            sup = self._supervisor(tmp, mode="manual")
+            sup.effective_port = 1080
+            sup.clash_port = 1180
+            self.assertIsNone(sup._make_health_monitor())
+            self.assertFalse(helpers.load_supervision(tmp)["supervised"])
+
+    def test_restart_skips_when_config_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = self._supervisor(tmp)
+            sup.effective_port = 1080
+            sup.clash_port = 1180
+            sup.bin.is_running = lambda: True
+            calls = []
+            sup.bin.restart = lambda *a, **k: calls.append(1)
+            sup.store.enabled = lambda: []
+            sup._generate_config = lambda: ({"log": {"level": "warn"}}, [])
+            with open(sup.config_path, "w") as handle:
+                json.dump({"log": {"level": "warn"}}, handle, indent=2,
+                          sort_keys=True)
+            self.assertFalse(sup.restart())
+            self.assertEqual(calls, [])
+
+    def _health_monitor(self, ctl):
+        return health.HealthMonitor(
+            port=1080, test_url="https://x/204", control=ctl,
+            notify=lambda *a, **k: None, logger=lambda *a, **k: None,
+            interval=30, fail_threshold=1, sleeper=lambda s: None,
+            direct_probe=lambda: True,
+            fetch=lambda url, port: ctl.now in ctl.working)
+
+    def test_freeze_pins_and_resumes_urltest(self):
+        ctl = _FakeGroupControl(["proxy-auto", "A", "B"], working={"A"})
+        ctl.auto_tag = "proxy-auto"
+        ctl.now = "proxy-auto"
+        ctl.auto_effective = "A"
+        mon = self._health_monitor(ctl)
+        mon.set_frozen(True)
+        self.assertEqual(ctl.now, "A")  # pinned to the effective node
+        mon.set_frozen(False)
+        self.assertEqual(ctl.now, "proxy-auto")  # resumed automatic
+
+    def test_frozen_monitor_does_not_failover(self):
+        ctl = _FakeGroupControl(["A", "B"], working=set())
+        mon = self._health_monitor(ctl)
+        mon.set_frozen(True)
+        self.assertIsNone(mon.check())
+        self.assertEqual(ctl.selections, [])
 
     def test_monitor_none_when_auto_check_off(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -55,6 +55,25 @@ def _idle_probe_interval():
     return None
 
 
+def _playback_active():
+    """True while Kodi has media loaded (playing or buffering).
+
+    Used to freeze the proxy engine: switching nodes or restarting sing-box
+    changes the exit IP and breaks in-flight streams — YouTube googlevideo
+    URLs are signed for one IP, and Elementum's tracker announces die with
+    the dropped connection. Player.HasMedia is already true during buffering,
+    so a stuck torrent also stays frozen until the user stops it.
+    """
+    try:
+        if xbmc.getCondVisibility("Player.HasMedia"):
+            return True
+        if xbmc.Player().isPlaying():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def build_integration_manager(logger=None, notify=None):
     """IntegrationManager bound to the Kodi adapters from helpers.
 
@@ -222,6 +241,7 @@ def main():
         try:
             new_settings = helpers.get_settings()
             notify_enabled["v"] = new_settings.get("notify", True)
+            sup.playback_active = _playback_active()
 
             engine_or_mode_changed = (
                 new_settings.get("engine") != prev_settings.get("engine") or
@@ -237,8 +257,8 @@ def main():
                 sup.settings.setdefault("log_path", helpers.log_path())
                 if engine_or_mode_changed:
                     _xbmc_log("engine/mode/port changed, reconfiguring")
-                    started = sup.reconfigure_engine()
-                    _sync_integration(new_settings, started)
+                    sup.request_reconfigure()
+                    _sync_integration(new_settings, sup.bin.is_running())
                 elif integration_changed:
                     _sync_integration(new_settings, sup.bin.is_running())
 
@@ -247,12 +267,8 @@ def main():
             if mtime != prev_profiles_mtime:
                 prev_profiles_mtime = mtime
                 _xbmc_log("profiles changed, reloading")
-                sup.reload_profiles()
-                if sup.bin.is_running():
-                    sup.restart()
-                elif new_settings.get("autostart"):
-                    started = sup.start()
-                    _sync_integration(new_settings, started)
+                sup.request_reload()
+                _sync_integration(new_settings, sup.bin.is_running())
 
             sup.health_interval_override = _idle_probe_interval()
             if sup.bin.is_running() or sup.store.enabled():

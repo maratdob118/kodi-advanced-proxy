@@ -391,9 +391,64 @@ class HealthMonitor(object):
         self._healthy_while_pinned = 0
         self.startup_grace = startup_grace
         self._checks = 0
+        # Playback freeze: while a stream is playing the active node is
+        # pinned (urltest would otherwise hop every few minutes and change
+        # the exit IP) and no failover/probe is attempted.
+        self.frozen = False
+        self._frozen_pin = None
+
+    def set_frozen(self, active):
+        """Enter/leave playback freeze. Idempotent."""
+        active = bool(active)
+        if active == self.frozen:
+            return
+        self.frozen = active
+        if active:
+            self._freeze_pin()
+        else:
+            self._unfreeze_pin()
+
+    def _freeze_pin(self):
+        """Pin the selector to the current outbound so urltest stops hopping."""
+        ctl = self.control
+        auto_tag = getattr(ctl, "auto_tag", None) if ctl else None
+        if not auto_tag:
+            return
+        try:
+            if ctl.current() != auto_tag:
+                return
+        except Exception:
+            return
+        current = self._effective_tag()
+        if not current or current == auto_tag:
+            return
+        try:
+            if ctl.select(current):
+                self._frozen_pin = current
+                self.log("health: pinned %s during playback" % current)
+        except Exception:
+            pass
+
+    def _unfreeze_pin(self):
+        """Resume automatic (urltest) selection after playback."""
+        pin = self._frozen_pin
+        self._frozen_pin = None
+        if not pin:
+            return
+        auto_tag = getattr(self.control, "auto_tag", None)
+        if not auto_tag:
+            return
+        try:
+            if self.control.select(auto_tag):
+                self._last_selected = None  # avoid a spurious auto-switch notify
+                self.log("health: resumed automatic selection after playback")
+        except Exception:
+            pass
 
     def tick(self, now=None):
         now = time.time() if now is None else now
+        if self.frozen:
+            return None
         if now - self._last_check < self.interval:
             return None
         self._last_check = now
@@ -401,6 +456,8 @@ class HealthMonitor(object):
 
     def check(self):
         """One connectivity check. Returns True/False, or None on skip."""
+        if self.frozen:
+            return None
         self._checks += 1
         self._observe_selection()
         effective = self._effective_tag()

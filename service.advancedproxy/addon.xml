@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="service.advancedproxy" name="Advanced Proxy" version="0.5.5" provider-name="advancedproxy">
+<addon id="service.advancedproxy" name="Advanced Proxy" version="0.5.6" provider-name="advancedproxy">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
@@ -18,6 +18,12 @@
         <website></website>
         <source></source>
         <news>
+0.5.6
+- Playback freeze: while Kodi has media loaded the engine is never switched or restarted (also pins the urltest selection), so in-flight streams keep their exit IP (fixes YouTube googlevideo 403 stalls and Elementum torrent stalls)
+- Deferred profile/subscription changes: applied automatically once playback stops
+- Skipped redundant engine restarts when the rebuilt config is identical
+- Supervised mode now clears a preferred profile that no longer exists
+
 0.5.5
 - Fixed false outages: availability checks accept empty 204 answers, traffic gate uses total counters, own probes no longer self-mask
 - Startup grace: no candidate walking on the first checks after engine start

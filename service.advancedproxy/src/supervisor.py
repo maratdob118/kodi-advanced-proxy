@@ -62,6 +62,13 @@ class ProxySupervisor(object):
         # Set by the outer loop (screensaver / idle time): overrides the
         # configured health interval while the box is unattended.
         self.health_interval_override = None
+        # Set by the outer loop while Kodi plays media. While true the
+        # engine is never switched or restarted: a node change alters the
+        # exit IP and breaks in-flight streams (YouTube googlevideo URLs are
+        # IP-signed; Elementum tracker announces die with the connection).
+        self.playback_active = False
+        self._pending_reload = False       # profiles/subscriptions changed
+        self._pending_reconfigure = False  # engine/mode/port changed
 
     def _log(self, msg, level="info"):
         """Log and surface every error as a toast notification."""
@@ -168,11 +175,29 @@ class ProxySupervisor(object):
         return s
 
     def _supervision(self):
-        """Supervised-manual state written by the UI on profile picks."""
+        """Supervised-manual state, dropping a preferred profile that is gone.
+
+        Subscription refreshes rename and remove nodes; a preferred tag that
+        no longer maps to an enabled profile would make the monitor retry a
+        dead restore forever, so such supervision is cleared on sight.
+        """
         try:
-            return helpers.load_supervision(self.work_dir)
+            data = helpers.load_supervision(self.work_dir)
         except Exception:
             return {"supervised": False, "preferred": None}
+        if not data.get("supervised"):
+            return data
+        preferred = data.get("preferred")
+        enabled_tags = [p["tag"] for p in self.store.enabled()]
+        if preferred and preferred not in enabled_tags:
+            self.log("supervised profile %s no longer exists, clearing"
+                     % preferred, "warn")
+            try:
+                helpers.clear_supervision(self.work_dir)
+            except Exception:
+                pass
+            return {"supervised": False, "preferred": None}
+        return data
 
     def _make_health_monitor(self):
         """Connectivity monitor for supervised modes; None when disabled.
@@ -220,16 +245,35 @@ class ProxySupervisor(object):
             preferred_tag=preferred,
             startup_grace=2)
 
+    def _generate_config(self):
+        """Build the engine config from current profiles/settings.
+
+        Returns (config, skipped)). Raises on failure.
+        """
+        engine = self.settings.get("engine", "sing-box")
+        active = self.store.active_tag
+        build_settings = self._build_settings()
+        if engine == "xray":
+            return build_xray.build_config(self.store.enabled(), build_settings, active)
+        return build_singbox.build_config(self.store.enabled(), build_settings, active)
+
+    @staticmethod
+    def _canonical(config):
+        return json.dumps(config, indent=2, sort_keys=True)
+
+    def _config_matches(self, config):
+        """True when CONFIG equals the config file currently on disk."""
+        try:
+            with open(self.config_path) as f:
+                current = json.load(f)
+        except (OSError, ValueError):
+            return False
+        return self._canonical(current) == self._canonical(config)
+
     def build_and_write_config(self):
         enabled = self.store.enabled()
         try:
-            engine = self.settings.get("engine", "sing-box")
-            active = self.store.active_tag
-            build_settings = self._build_settings()
-            if engine == "xray":
-                config, skipped = build_xray.build_config(enabled, build_settings, active)
-            else:
-                config, skipped = build_singbox.build_config(enabled, build_settings, active)
+            config, skipped = self._generate_config()
         except Exception as e:
             self.last_error = "config build failed: %s" % e
             self.log(self.last_error, "error")
@@ -325,16 +369,71 @@ class ProxySupervisor(object):
         self._write_state()
 
     def restart(self):
-        """Rebuild config from current profiles/settings, then restart the engine."""
+        """Rebuild config from current profiles/settings, then restart the engine.
+
+        Skipped when the rebuilt config is byte-identical to the running one:
+        the UI writes profiles.json more than once for a single edit, and a
+        pointless restart drops every in-flight connection.
+        """
         if self._shutting_down:
             self.log("restart: shutting down, engine not restarted", "warn")
-            return
-        ok = self.build_and_write_config()
-        if not ok:
-            self.log("restart: config build failed, keeping current process", "warn")
-            return
+            return False
+        try:
+            config, _skipped = self._generate_config()
+        except Exception as e:
+            self.log("restart: config build failed, keeping current process: %s"
+                     % e, "warn")
+            return False
+        if self.bin.is_running() and self._config_matches(config):
+            self.log("config unchanged, skipping restart")
+            return False
+        if not self.build_and_write_config():
+            self.log("restart: config invalid, keeping current process", "warn")
+            return False
         self.bin.restart(self.config_path, port=self.effective_port)
         self._last_active_tag = self.store.active_tag
+        return True
+
+    def request_reload(self):
+        """Apply a profiles/subscriptions change, deferring during playback.
+
+        Returns True when the engine was (re)started, False otherwise.
+        """
+        if self.playback_active:
+            self._pending_reload = True
+            self.log("proxy update deferred until playback stops")
+            return False
+        self.reload_profiles()
+        if self.bin.is_running():
+            return self.restart()
+        if self.settings.get("autostart"):
+            return self.start()
+        return False
+
+    def request_reconfigure(self):
+        """Apply an engine/mode/port change, deferring during playback."""
+        if self.playback_active:
+            self._pending_reconfigure = True
+            self.log("engine reconfiguration deferred until playback stops")
+            return False
+        return self.reconfigure_engine()
+
+    def _apply_pending(self):
+        """Run work that was deferred while media was playing."""
+        if self.playback_active:
+            return
+        if self._pending_reconfigure:
+            self._pending_reconfigure = False
+            self.log("applying deferred engine reconfiguration")
+            self.reconfigure_engine()
+        if self._pending_reload:
+            self._pending_reload = False
+            self.log("applying deferred profile update")
+            self.reload_profiles()
+            if self.bin.is_running():
+                self.restart()
+            elif self.settings.get("autostart"):
+                self.start()
 
     def reconfigure_engine(self):
         """Rebuild self.bin after engine/mode/port settings changed.
@@ -362,6 +461,7 @@ class ProxySupervisor(object):
     def tick(self):
         now = time.time()
         self._maybe_refresh_subscriptions(now)
+        self._apply_pending()
 
         if self.bin.is_running():
             if not self._was_running:
@@ -375,6 +475,7 @@ class ProxySupervisor(object):
             self._watch_active_change()
             if self.health is not None:
                 try:
+                    self.health.set_frozen(self.playback_active)
                     if self.health_interval_override:
                         self.health.interval = self.health_interval_override
                     else:
@@ -475,6 +576,10 @@ class ProxySupervisor(object):
         """
         if not self.store.enabled():
             self.log("no enabled profiles after subscription refresh", "warn")
+            return
+        if self.playback_active:
+            self._pending_reload = True
+            self.log("subscription changes deferred until playback stops")
             return
         if self.bin.is_running():
             self.reconfigure_engine()
