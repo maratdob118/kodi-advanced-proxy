@@ -37,6 +37,7 @@ _DEFAULTS = {
     "health_interval": "30",
     "auto_check": "true",
     "test_urls": "https://www.gstatic.com/generate_204",
+    "critical_urls": "https://api.themoviedb.org/3",
     "probe_url": "https://speed.cloudflare.com/__down?bytes={n}",
     "debug": "false",
     "direct_torrent": "false",
@@ -143,6 +144,9 @@ def get_settings(reader=None):
         "auto_check": b("auto_check"),
         "test_urls": test_urls,
         "test_url": test_urls[0],
+        "critical_urls": parse_urls(
+            str(raw.get("critical_urls") or _DEFAULTS["critical_urls"]),
+            [_DEFAULTS["critical_urls"]]),
         "probe_url": (str(raw.get("probe_url") or "").strip()
                       or _DEFAULTS["probe_url"]),
         "debug": b("debug"),
@@ -283,19 +287,22 @@ def state_path():
     return os.path.join(profile_dir(), "state.json")
 
 
-def parse_test_urls(value):
-    """Split a settings string into check URLs (comma/space separated).
+def parse_urls(value, fallback):
+    """Split a settings string into http(s) URLs (comma/space separated).
 
-    Always returns a non-empty list; garbage falls back to the default.
+    Always returns a non-empty list; garbage falls back to FALLBACK.
     """
     parts = []
     for chunk in str(value or "").replace(",", " ").split():
         chunk = chunk.strip()
         if chunk.startswith("http://") or chunk.startswith("https://"):
             parts.append(chunk)
-    if not parts:
-        parts = [_DEFAULTS["test_urls"]]
-    return parts
+    return parts or list(fallback)
+
+
+def parse_test_urls(value):
+    """Split a settings string into check URLs (comma/space separated)."""
+    return parse_urls(value, [_DEFAULTS["test_urls"]])
 
 
 def supervision_path(base_dir=None):

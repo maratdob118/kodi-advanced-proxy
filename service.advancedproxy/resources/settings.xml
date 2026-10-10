@@ -125,6 +125,16 @@
                         <heading>32274</heading>
                     </control>
                 </setting>
+                <setting id="critical_urls" type="string" label="32278" help="32278">
+                    <level>2</level>
+                    <default>https://api.themoviedb.org/3</default>
+                    <constraints>
+                        <allowempty>true</allowempty>
+                    </constraints>
+                    <control type="edit" format="string">
+                        <heading>32278</heading>
+                    </control>
+                </setting>
                 <setting id="probe_url" type="string" label="32275" help="32275">
                     <level>2</level>
                     <default>https://speed.cloudflare.com/__down?bytes={n}</default>

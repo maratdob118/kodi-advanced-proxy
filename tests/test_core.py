@@ -832,7 +832,7 @@ class TestHealthMonitor(unittest.TestCase):
             notify=lambda msg, error=False: notes.append((msg, error)),
             logger=lambda msg, level="info": logs.append((level, msg)),
             interval=30, fail_threshold=1, sleeper=lambda s: None,
-            direct_probe=lambda: True)
+            direct_probe=lambda: True, critical_urls=[])
         args.update(kw)
         mon = health.HealthMonitor(**args)
         ctl = control
@@ -850,6 +850,37 @@ class TestHealthMonitor(unittest.TestCase):
         self.assertTrue(mon.check())
         self.assertEqual(notes, [])
         self.assertFalse(mon._down)
+
+    def test_critical_host_blocked_triggers_switch(self):
+        # Both nodes answer generic probes; only B reaches the critical host
+        # (the TMDB-style SNI/exit block).
+        ctl = _FakeGroupControl(["A", "B"], working={"A", "B"})
+        mon, notes = self._monitor(control=ctl,
+                                   critical_urls=["https://crit/x"])
+
+        def fetch(url, port):
+            if url == "https://crit/x":
+                return ctl.now == "B"
+            return ctl.now in ctl.working
+        mon.fetch = fetch
+        self.assertFalse(mon.check())
+        self.assertEqual(ctl.now, "B")
+        self.assertIn(("Auto-switch: A -> B", False), notes)
+        self.assertNotIn(("No internet via proxy, switching...", True), notes)
+
+    def test_critical_host_blocked_everywhere_keeps_node(self):
+        ctl = _FakeGroupControl(["A", "B"], working={"A", "B"})
+        mon, notes = self._monitor(control=ctl,
+                                   critical_urls=["https://crit/x"])
+
+        def fetch(url, port):
+            if url == "https://crit/x":
+                return False
+            return ctl.now in ctl.working
+        mon.fetch = fetch
+        self.assertFalse(mon.check())
+        self.assertEqual(ctl.now, "A")  # nothing better, stay
+        self.assertEqual(notes, [])
 
     def test_failed_traffic_probe_immediately_starts_failover(self):
         mon, notes = self._monitor(working=False)

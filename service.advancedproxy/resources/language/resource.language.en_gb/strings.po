@@ -511,3 +511,7 @@ msgstr ""
 msgctxt "#32277"
 msgid "Preferred profile is back: %s"
 msgstr ""
+
+msgctxt "#32278"
+msgid "Required hosts (must be reachable; empty disables)"
+msgstr ""

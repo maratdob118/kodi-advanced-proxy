@@ -41,6 +41,37 @@ ACTIVE_TRAFFIC_MIN_BYTES = 64 * 1024
 MAX_CANDIDATES = 3
 # Healthy checks while pinned before attempting a return to automatic.
 RETURN_TO_AUTO_AFTER = 10
+# Hosts the active outbound MUST reach, checked in addition to the generic
+# liveness/data probes. A node can pass generate_204/Cloudflare (urltest and
+# our own probes) while silently dropping these - the classic SNI/exit-IP
+# block. TMDB is what Elementum uses for metadata; without it a torrent is
+# found but never resolves into an episode list, so such a node is useless
+# even though it "answers".
+CRITICAL_URLS = ("https://api.themoviedb.org/3",)
+
+
+def _critical_fetch(url, port, timeout=LIVENESS_TIMEOUT):
+    """True when the host answers through the proxy (any HTTP status).
+
+    A 4xx/5xx still proves the TLS handshake and request went through, which
+    is all we need to distinguish a reachable host from a DPI-dropped one.
+    """
+    from urllib.error import HTTPError
+    proxy = "http://127.0.0.1:%d" % port
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    request = urllib.request.Request(url, headers={"User-Agent": "advancedproxy"})
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            try:
+                response.read(64)
+            except Exception:
+                pass
+            return True
+    except HTTPError:
+        return True
+    except Exception:
+        return False
 
 
 def _liveness_fetch(url, port, timeout=LIVENESS_TIMEOUT):
@@ -356,11 +387,13 @@ class HealthMonitor(object):
                  return_after=RETURN_TO_AUTO_AFTER,
                  min_active_bytes=ACTIVE_TRAFFIC_MIN_BYTES,
                  liveness_urls=None, probe_url=None, preferred_tag=None,
-                 startup_grace=0):
+                 startup_grace=0, critical_urls=None):
         self.port = port
         self.test_url = test_url
         self.liveness_urls = list(liveness_urls) if liveness_urls else (
             [test_url] if test_url else [DIRECT_PROBE_URL])
+        self.critical_urls = (list(critical_urls) if critical_urls is not None
+                              else list(CRITICAL_URLS))
         template = probe_url or PROBE_URL
         try:
             data_url = template.replace("{n}", str(PROBE_BYTES))
@@ -471,6 +504,16 @@ class HealthMonitor(object):
             return True
         ok, elapsed = self._check_data()
         self._rebaseline_traffic()
+        if ok and not self._critical_ok():
+            # Reachable in general but a required host is blocked on this
+            # node (SNI/exit-IP). Move to a candidate that passes it, without
+            # crying "no internet".
+            self.log("health: critical host unreachable on %s (degraded)"
+                     % (effective or "current"), "warn")
+            if effective:
+                self.scorer.record_failure(effective)
+            self._degraded_failover()
+            return False
         if ok:
             if self._down:
                 self._down = False
@@ -537,6 +580,21 @@ class HealthMonitor(object):
             except Exception:
                 continue
         return False
+
+    def _probe_critical(self, url):
+        if self.fetch is not None:
+            return self.fetch(url, self.port)
+        return _critical_fetch(url, self.port)
+
+    def _critical_ok(self):
+        """True when every critical host is reachable on the current node."""
+        for url in self.critical_urls:
+            try:
+                if not self._probe_critical(url):
+                    return False
+            except Exception:
+                return False
+        return True
 
     def _check_data(self):
         """Two stages: liveness first, then the data-transfer probe.
@@ -645,7 +703,7 @@ class HealthMonitor(object):
         self.sleeper(2)
         ok, _ = self._check_data()
         self._rebaseline_traffic()
-        if ok:
+        if ok and self._critical_ok():
             best = self._effective_tag() or auto_tag
             self.pinned_tag = None
             self._healthy_while_pinned = 0
@@ -697,7 +755,7 @@ class HealthMonitor(object):
         self.sleeper(2)
         ok, elapsed = self._check_data()
         self._rebaseline_traffic()
-        if ok:
+        if ok and self._critical_ok():
             self.scorer.record_success(
                 self.preferred_tag,
                 throughput_kbs=self._throughput(elapsed))
@@ -741,7 +799,17 @@ class HealthMonitor(object):
             return {}
         return delays if isinstance(delays, dict) else {}
 
-    def _failover(self):
+    def _degraded_failover(self):
+        """Leave a node that answers generic probes but blocks a critical host."""
+        if not self.auto_failover:
+            return False
+        switched = self._failover(require_critical=True)
+        if not switched:
+            self.log("health: no candidate passes the critical host; "
+                     "keeping current", "warn")
+        return switched
+
+    def _failover(self, require_critical=False):
         ctl = self.control
         if ctl is None:
             return False
@@ -769,8 +837,9 @@ class HealthMonitor(object):
                     continue
                 self.sleeper(2)
                 ok, elapsed = self._check_data()
+                accepted = ok and (not require_critical or self._critical_ok())
                 self._rebaseline_traffic()
-                if ok:
+                if accepted:
                     self.scorer.record_success(
                         candidate, delay_ms=delay,
                         throughput_kbs=self._throughput(elapsed))

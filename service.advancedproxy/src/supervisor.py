@@ -232,6 +232,10 @@ class ProxySupervisor(object):
         test_urls = self.settings.get("test_urls") or None
         if isinstance(test_urls, str):
             test_urls = [test_urls]
+        critical_urls = self.settings.get("critical_urls") or None
+        if isinstance(critical_urls, str):
+            critical_urls = helpers.parse_urls(
+                critical_urls, [critical_urls])
         return health.HealthMonitor(
             port=self.effective_port or int(self.settings.get("local_port", 1080)),
             test_url=self.settings.get("test_url"),
@@ -243,7 +247,8 @@ class ProxySupervisor(object):
             liveness_urls=test_urls,
             probe_url=self.settings.get("probe_url"),
             preferred_tag=preferred,
-            startup_grace=2)
+            startup_grace=2,
+            critical_urls=critical_urls)
 
     def _generate_config(self):
         """Build the engine config from current profiles/settings.
