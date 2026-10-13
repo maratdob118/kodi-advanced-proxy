@@ -403,6 +403,8 @@ class HealthMonitor(object):
         self.urls = [data_url]
         self.preferred_tag = preferred_tag
         self._restore_counter = 0
+        self._preferred_retry_at = 0
+        self._preferred_retry_failures = 0
         self.control = control
         self.fetch = fetch
         self.notify = notify or (lambda msg, error=False: None)
@@ -731,9 +733,14 @@ class HealthMonitor(object):
         effective = self._effective_tag()
         if effective == self.preferred_tag:
             self._restore_counter = 0
+            self._preferred_retry_at = 0
+            self._preferred_retry_failures = 0
+            return
+        now = time.monotonic()
+        if now < self._preferred_retry_at:
             return
         self._restore_counter += 1
-        if self._restore_counter < self.return_after:
+        if not self._preferred_retry_at and self._restore_counter < self.return_after:
             return
         self._restore_counter = 0
         if hasattr(ctl, "active_delay"):
@@ -743,19 +750,21 @@ class HealthMonitor(object):
             except Exception:
                 delay = None
             if delay is None:
-                self.log("health: preferred %s still failing delay check"
-                         % self.preferred_tag)
+                self._preferred_failed("delay check failed")
                 return
         try:
             selected = ctl.select(self.preferred_tag)
         except Exception:
             selected = False
         if not selected:
+            self._preferred_failed("selection failed")
             return
         self.sleeper(2)
         ok, elapsed = self._check_data()
         self._rebaseline_traffic()
         if ok and self._critical_ok():
+            self._preferred_retry_at = 0
+            self._preferred_retry_failures = 0
             self.scorer.record_success(
                 self.preferred_tag,
                 throughput_kbs=self._throughput(elapsed))
@@ -771,8 +780,15 @@ class HealthMonitor(object):
                     ctl.select(effective)
             except Exception:
                 pass
-            self.log("health: preferred %s not back yet" % self.preferred_tag,
-                     "warn")
+            self._preferred_failed("connectivity check failed")
+
+    def _preferred_failed(self, reason):
+        self._preferred_retry_failures += 1
+        base = max(300, self.interval * self.return_after)
+        delay = min(3600, base * (2 ** min(self._preferred_retry_failures, 6)))
+        self._preferred_retry_at = time.monotonic() + delay
+        self.log("health: preferred %s unavailable (%s); retry in %d minutes"
+                 % (self.preferred_tag, reason, delay // 60), "warn")
 
     def _failover_or_report_network(self):
         # Check the LAN first: pointless to walk proxies while offline.
