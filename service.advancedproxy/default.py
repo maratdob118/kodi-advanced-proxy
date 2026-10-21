@@ -218,12 +218,14 @@ def _action_activate_reachable(handle, tag):
         if store.set_active(tag):
             if supervision.get("supervised"):
                 helpers.save_supervision({"supervised": True,
-                                          "preferred": tag})
+                                          "preferred": tag,
+                                          "working": tag})
             _notify(_ls(32212) % tag)
         else:
             _notify(_ls(32219), error=True)
     else:
-        helpers.save_supervision({"supervised": True, "preferred": tag})
+        helpers.save_supervision({"supervised": True, "preferred": tag,
+                                  "working": tag})
         xbmcaddon.Addon(ADDON_ID).setSetting("mode", "1")
         if store.set_active(tag):
             _notify(_ls(32276) % tag)

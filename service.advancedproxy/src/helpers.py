@@ -310,17 +310,23 @@ def supervision_path(base_dir=None):
 
 
 def load_supervision(base_dir=None):
-    """Supervised-manual state: {"supervised": bool, "preferred": tag|None}."""
+    """Supervised-manual state.
+
+    Keys: supervised (bool), preferred (the user's pick), working (the
+    profile that last proved reachable - used as the engine default so a
+    cold start does not come up on a dead node).
+    """
     try:
         with open(supervision_path(base_dir), "r",
                   encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
-        return {"supervised": False, "preferred": None}
+        return {"supervised": False, "preferred": None, "working": None}
     if not isinstance(data, dict):
-        return {"supervised": False, "preferred": None}
+        return {"supervised": False, "preferred": None, "working": None}
     return {"supervised": bool(data.get("supervised", False)),
-            "preferred": data.get("preferred")}
+            "preferred": data.get("preferred"),
+            "working": data.get("working")}
 
 
 def save_supervision(data, base_dir=None):
@@ -330,7 +336,8 @@ def save_supervision(data, base_dir=None):
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"supervised": bool(data.get("supervised", False)),
-                       "preferred": data.get("preferred")}, f)
+                       "preferred": data.get("preferred"),
+                       "working": data.get("working")}, f)
         os.replace(tmp, path)
         return True
     except OSError:
@@ -338,8 +345,8 @@ def save_supervision(data, base_dir=None):
 
 
 def clear_supervision(base_dir=None):
-    return save_supervision({"supervised": False, "preferred": None},
-                            base_dir)
+    return save_supervision({"supervised": False, "preferred": None,
+                              "working": None}, base_dir)
 
 
 def read_proxy_state():

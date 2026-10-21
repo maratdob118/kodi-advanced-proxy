@@ -1271,6 +1271,44 @@ class TestSupervisorHealthWiring(unittest.TestCase):
             self.assertIsNone(sup._make_health_monitor())
             self.assertFalse(helpers.load_supervision(tmp)["supervised"])
 
+    def test_failover_remembers_working_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_profiles(tmp, ["A", "B"])
+            helpers.save_supervision({"supervised": True,
+                                      "preferred": "A", "working": "A"}, tmp)
+            sup = self._supervisor(tmp, mode="manual")
+            sup.effective_port = 1080
+            sup.clash_port = 1180
+            sup._on_health_switch("A", "B")
+            data = helpers.load_supervision(tmp)
+            self.assertEqual(data["working"], "B")
+            self.assertEqual(data["preferred"], "A")  # user's pick kept
+
+    def test_engine_starts_on_remembered_working_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_profiles(tmp, ["A", "B"])
+            helpers.save_supervision({"supervised": True,
+                                      "preferred": "A", "working": "B"}, tmp)
+            sup = self._supervisor(tmp, mode="manual")
+            self.assertEqual(sup._effective_start_tag("A"), "B")
+
+    def test_engine_ignores_working_profile_that_disappeared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_profiles(tmp, ["A"])
+            helpers.save_supervision({"supervised": True,
+                                      "preferred": "A", "working": "GONE"},
+                                     tmp)
+            sup = self._supervisor(tmp, mode="manual")
+            self.assertEqual(sup._effective_start_tag("A"), "A")
+
+    def test_auto_mode_keeps_configured_active_tag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_profiles(tmp, ["A", "B"])
+            helpers.save_supervision({"supervised": True,
+                                      "preferred": "A", "working": "B"}, tmp)
+            sup = self._supervisor(tmp, mode="urltest")
+            self.assertEqual(sup._effective_start_tag("A"), "A")
+
     def test_restart_skips_when_config_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             sup = self._supervisor(tmp)
@@ -1415,11 +1453,13 @@ class TestHelpers(unittest.TestCase):
     def test_supervision_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(helpers.load_supervision(tmp),
-                             {"supervised": False, "preferred": None})
+                             {"supervised": False, "preferred": None,
+                              "working": None})
             self.assertTrue(helpers.save_supervision(
                 {"supervised": True, "preferred": "A"}, tmp))
             self.assertEqual(helpers.load_supervision(tmp),
-                             {"supervised": True, "preferred": "A"})
+                             {"supervised": True, "preferred": "A",
+                              "working": None})
             helpers.clear_supervision(tmp)
             self.assertFalse(helpers.load_supervision(tmp)["supervised"])
 

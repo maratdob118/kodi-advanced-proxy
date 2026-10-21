@@ -247,8 +247,35 @@ class ProxySupervisor(object):
             liveness_urls=test_urls,
             probe_url=self.settings.get("probe_url"),
             preferred_tag=preferred,
-            startup_grace=2,
-            critical_urls=critical_urls)
+            # In auto mode the urltest group needs a moment to evaluate its
+            # nodes, so the first failures are ignored. A pinned profile has
+            # no warm-up: a failing one is dead, fail over at once.
+            startup_grace=2 if mode == "urltest" else 0,
+            critical_urls=critical_urls,
+            on_switch=self._on_health_switch)
+
+    def _on_health_switch(self, old_effective, new_effective):
+        """Remember the profile that works so the next start uses it.
+
+        The user's preference (supervision["preferred"]) stays untouched:
+        the health monitor returns to it as soon as it recovers. Only the
+        engine default moves, so a cold start does not come up on a node
+        that is known to be dead.
+        """
+        if not new_effective:
+            return
+        supervision = self._supervision()
+        if not supervision.get("supervised"):
+            return
+        enabled = {p["tag"] for p in self.store.enabled()}
+        if new_effective not in enabled:
+            return
+        if supervision.get("working") == new_effective:
+            return
+        supervision["working"] = new_effective
+        if helpers.save_supervision(supervision, self.work_dir):
+            self.log("health: remembered working profile %s" % new_effective)
+        self._write_state()
 
     def _generate_config(self):
         """Build the engine config from current profiles/settings.
@@ -257,10 +284,32 @@ class ProxySupervisor(object):
         """
         engine = self.settings.get("engine", "sing-box")
         active = self.store.active_tag
+        active = self._effective_start_tag(active)
         build_settings = self._build_settings()
         if engine == "xray":
             return build_xray.build_config(self.store.enabled(), build_settings, active)
         return build_singbox.build_config(self.store.enabled(), build_settings, active)
+
+    def _effective_start_tag(self, active):
+        """The profile the engine should start on.
+
+        In supervised manual mode the last profile that actually carried
+        traffic wins over the pinned one: booting on a dead node breaks
+        every add-on that uses the system proxy until the health monitor
+        fails over, which is exactly the bug this avoids.
+        """
+        supervision = self._supervision()
+        if not supervision.get("supervised"):
+            return active
+        if self.settings.get("mode") != "manual":
+            return active
+        working = supervision.get("working")
+        if not working:
+            return active
+        enabled = {p["tag"] for p in self.store.enabled()}
+        if working in enabled:
+            return working
+        return active
 
     @staticmethod
     def _canonical(config):
@@ -315,7 +364,7 @@ class ProxySupervisor(object):
             "mode": self.settings.get("mode"),
             "port": self.effective_port or self.settings.get("local_port"),
             "running": self.bin.is_running(),
-            "active": self.store.active_tag,
+            "active": self._effective_start_tag(self.store.active_tag),
             "last_error": self.last_error,
         }
         try:

@@ -387,7 +387,7 @@ class HealthMonitor(object):
                  return_after=RETURN_TO_AUTO_AFTER,
                  min_active_bytes=ACTIVE_TRAFFIC_MIN_BYTES,
                  liveness_urls=None, probe_url=None, preferred_tag=None,
-                 startup_grace=0, critical_urls=None):
+                 startup_grace=0, critical_urls=None, on_switch=None):
         self.port = port
         self.test_url = test_url
         self.liveness_urls = list(liveness_urls) if liveness_urls else (
@@ -425,6 +425,10 @@ class HealthMonitor(object):
         self.pinned_tag = None
         self._healthy_while_pinned = 0
         self.startup_grace = startup_grace
+        # Called as on_switch(old_effective, new_effective) after a
+        # successful failover, so the supervisor can remember the working
+        # profile and start the engine on it next time.
+        self.on_switch = on_switch
         self._checks = 0
         # Playback freeze: while a stream is playing the active node is
         # pinned (urltest would otherwise hop every few minutes and change
@@ -870,6 +874,13 @@ class HealthMonitor(object):
                                 self.scorer.score(candidate, delay)))
                     self.notify("Auto-switch: %s -> %s"
                                 % (old_effective or current, new_effective))
+                    if self.on_switch is not None:
+                        try:
+                            self.on_switch(old_effective or current,
+                                           new_effective)
+                        except Exception as e:
+                            self.log("health: switch hook failed: %s" % e,
+                                     "warn")
                     return True
                 self.scorer.record_failure(candidate)
             if current:
